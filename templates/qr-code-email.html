@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Your Gym Access Code</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        font-family: Arial, sans-serif;
+        background-color: #f4f4f4;
+        line-height: 1.6;
+      }
+      .email-container {
+        max-width: 600px;
+        margin: 0 auto;
+        background-color: #ffffff;
+        box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+      }
+      .header {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        padding: 30px 20px;
+        text-align: center;
+      }
+      .header h1 {
+        margin: 0;
+        font-size: 28px;
+        font-weight: normal;
+      }
+      .content {
+        padding: 30px 20px;
+        color: #333;
+      }
+      .qr-section {
+        background: #f9f9f9;
+        border: 2px dashed #ddd;
+        border-radius: 10px;
+        padding: 30px 20px;
+        margin: 30px 0;
+        text-align: center;
+      }
+      .qr-section h2 {
+        color: #667eea;
+        margin-top: 0;
+        font-size: 24px;
+      }
+      .unique-id {
+        font-size: 32px;
+        font-weight: bold;
+        letter-spacing: 3px;
+        color: #333;
+        background: white;
+        padding: 15px 20px;
+        border-radius: 8px;
+        margin: 20px 0;
+        border: 2px solid #667eea;
+        display: inline-block;
+      }
+      .qr-image {
+        margin: 20px 0;
+      }
+      .qr-image img {
+        max-width: 200px;
+        border: 3px solid white;
+        border-radius: 10px;
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+      }
+      .instructions {
+        background: #e8f2ff;
+        border-left: 4px solid #667eea;
+        padding: 20px;
+        margin: 30px 0;
+      }
+      .instructions h3 {
+        color: #667eea;
+        margin-top: 0;
+      }
+      .instructions ul {
+        margin: 15px 0;
+        padding-left: 20px;
+      }
+      .instructions li {
+        margin: 8px 0;
+      }
+      .footer {
+        background: #f8f9fa;
+        padding: 20px;
+        text-align: center;
+        color: #666;
+        border-top: 1px solid #eee;
+      }
+      .footer p {
+        margin: 5px 0;
+        font-size: 14px;
+      }
+      .highlight {
+        background: #fff3cd;
+        padding: 15px;
+        border-radius: 5px;
+        border-left: 4px solid #ffc107;
+        margin: 20px 0;
+      }
+      .success-badge {
+        background: #28a745;
+        color: white;
+        padding: 8px 16px;
+        border-radius: 20px;
+        font-size: 14px;
+        font-weight: bold;
+        display: inline-block;
+        margin-bottom: 15px;
+      }
+      @media only screen and (max-width: 600px) {
+        .email-container {
+          width: 100% !important;
+          margin: 0 !important;
+        }
+        .content,
+        .header,
+        .footer {
+          padding: 20px 15px !important;
+        }
+        .unique-id {
+          font-size: 24px !important;
+          letter-spacing: 2px !important;
+        }
+        .header h1 {
+          font-size: 24px !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="email-container">
+      <div class="header">
+        <h1>🏋️ Gym Access Code</h1>
+        <p>{{gym_name}}</p>
+      </div>
+
+      <div class="content">
+        <div class="success-badge">✓ QR Code {{qr_action}}</div>
+
+        <p style="font-size: 18px">Hi {{user_name}},</p>
+
+        <p>
+          Your unique gym access code has been
+          <strong>{{qr_action}}</strong> and is ready to use!
+        </p>
+
+        <div class="qr-section">
+          <h2>Your Access Code</h2>
+          <div class="unique-id">{{unique_id}}</div>
+          <div class="qr-image">{{qr_code_image}}</div>
+          <p style="color: #666; font-size: 14px; margin-top: 15px">
+            <em>Screenshot or save this email for easy gym access</em>
+          </p>
+        </div>
+
+        <div class="instructions">
+          <h3>How to Use Your Access Code:</h3>
+          <ul>
+            <li>
+              <strong>Show the QR code</strong> - Scan at gym entry for quick
+              access
+            </li>
+            <li>
+              <strong>Provide your ID</strong> - Give staff your unique code:
+              <strong>{{unique_id}}</strong>
+            </li>
+            <li>
+              <strong>Save this email</strong> - Keep it handy on your phone for
+              convenience
+            </li>
+          </ul>
+        </div>
+
+        <div class="highlight">
+          <p>
+            <strong>💡 Pro Tip:</strong> Take a screenshot of your QR code and
+            save it to your phone's home screen for instant access!
+          </p>
+        </div>
+
+        <p>Your membership details:</p>
+        <ul>
+          <li><strong>Plan:</strong> {{membership_plan}}</li>
+          <li><strong>Status:</strong> Active</li>
+          <li><strong>Expires:</strong> {{expiry_date}}</li>
+        </ul>
+
+        <p>
+          If you have any questions about using your access code or need
+          assistance, please don't hesitate to contact our front desk staff.
+        </p>
+
+        <p>
+          Welcome to {{gym_name}} - we're excited to help you reach your fitness
+          goals!
+        </p>
+      </div>
+
+      <div class="footer">
+        <p><strong>{{gym_name}}</strong></p>
+        <p>This email was sent regarding your gym membership access code.</p>
+        <p>If you didn't request this, please contact us immediately.</p>
+        <p style="margin-top: 15px">
+          <a href="{{gym_url}}" style="color: #667eea">Visit Our Website</a> |
+          <a href="mailto:{{gym_email}}" style="color: #667eea"
+            >Contact Support</a
+          >
+        </p>
+      </div>
+    </div>
+  </body>
+</html>

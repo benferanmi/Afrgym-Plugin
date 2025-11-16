@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Your {{gym_name}} Membership Expires Soon</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .header {
+            background: linear-gradient(135deg, #f8bb00 0%, #ee2424 100%);
+            color: white;
+            text-align: center;
+            padding: 30px 20px;
+            border-radius: 10px 10px 0 0;
+        }
+        .content {
+            background: white;
+            padding: 30px;
+            border: 1px solid #ddd;
+        }
+        .alert-box {
+            background: #fff3cd;
+            border: 1px solid #ffeaa7;
+            color: #856404;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+            text-align: center;
+        }
+        .membership-details {
+            background: #f8f9fa;
+            border-left: 4px solid #da3434;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 5px;
+        }
+        .renewal-section {
+            background: linear-gradient(135deg, #00b894 0%, #00cec9 100%);
+            color: white;
+            text-align: center;
+            padding: 30px;
+            border-radius: 10px;
+            margin: 30px 0;
+        }
+        .renewal-button {
+            display: inline-block;
+            background: white;
+            color: #00b894;
+            padding: 15px 30px;
+            text-decoration: none;
+            border-radius: 50px;
+            font-weight: bold;
+            font-size: 18px;
+            margin: 15px 0;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+            transition: all 0.3s ease;
+        }
+        .renewal-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0,0,0,0.3);
+        }
+        .benefits {
+            background: #f8f9fa;
+            padding: 25px;
+            border-radius: 8px;
+            margin: 20px 0;
+        }
+        .footer {
+            text-align: center;
+            color: #666;
+            font-size: 14px;
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #eee;
+        }
+        .highlight {
+            color: #fe2828;
+            font-weight: bold;
+        }
+        .urgent {
+            color: #fa2121;
+            font-weight: bold;
+            font-size: 18px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>⏰ Membership Expiring Soon!</h1>
+        <p>Don't let your fitness journey pause</p>
+    </div>
+    
+    <div class="content">
+        <div class="alert-box">
+            <h2>🚨 Action Required</h2>
+            <p class="urgent">Your membership expires in just a few days!</p>
+        </div>
+        
+        <p>Hi <span class="highlight">{{user_name}}</span>,</p>
+        
+        <p>We hope you've been enjoying your time at {{gym_name}}! We wanted to give you a heads up that your membership is approaching its expiry date.</p>
+        
+        <div class="membership-details">
+            <h3>📋 Your Current Membership</h3>
+            <p><strong>Plan:</strong> <span class="highlight">{{membership_plan}}</span></p>
+            <p><strong>Expiry Date:</strong> <span class="highlight">{{expiry_date}}</span></p>
+            <p><strong>Status:</strong> <span style="color: #f39c12;">⚠️ Expiring Soon</span></p>
+        </div>
+        
+        <div class="renewal-section">
+            <h2>🔄 Ready to Continue Your Journey?</h2>
+            <p style="font-size: 16px; margin-bottom: 20px;">
+                Renew your membership today and keep crushing your fitness goals!
+            </p>
+            <a href="{{renewal_url}}" class="renewal-button">
+                🏋️ Renew My Membership
+            </a>
+            <p style="font-size: 14px; margin-top: 20px;">
+                <em>Click the button above to renew online in just a few clicks</em>
+            </p>
+        </div>
+        
+        <div class="benefits">
+            <h3>💪 Why Renew with AfrGym?</h3>
+            <ul style="padding-left: 20px;">
+                <li>✅ <strong>State-of-the-art equipment</strong> - Always clean and well-maintained</li>
+                <li>✅ <strong>Expert trainers</strong> - Get professional guidance when you need it</li>
+                <li>✅ <strong>Variety of classes</strong> - From yoga to HIIT, find what you love</li>
+                <li>✅ <strong>Flexible hours</strong> - Work out on your schedule</li>
+                <li>✅ <strong>Community support</strong> - Stay motivated with fellow members</li>
+                <li>✅ <strong>Member benefits</strong> - Exclusive discounts and perks</li>
+            </ul>
+        </div>
+        
+        <div style="background: #e8f4f8; padding: 20px; border-radius: 8px; margin: 20px 0;">
+            <h3>❓ Have Questions?</h3>
+            <p>Our team is here to help you choose the perfect membership plan:</p>
+            <ul style="list-style: none; padding-left: 0;">
+                <>📞 <strong>Call us:</strong><a href="tel:+2348143587806">+234 0814 358 7806</a></li>
+                <li>📧 <strong>Email us:</strong> <a href="mailto:theafrgym@gmail.com">theafrgym@gmail.com</a></li>
+                <li>🏢 <strong>Visit us:</strong> Stop by the front desk anytime</li>
+            </ul>
+            <p><strong>Hours:</strong> Mon-Fri 6:30AM-8PM, Sat-Sun 6:30AM-12PM</p>
+        </div>
+        
+        <div style="background: #ffe8e8; border: 1px solid #ffcccb; padding: 20px; border-radius: 8px; margin: 20px 0;">
+            <h3>⚠️ Important Reminder</h3>
+            <p><strong>After your membership expires:</strong></p>
+            <ul>
+                <li>❌ You'll lose access to all gym facilities</li>
+                <li>❌ Your QR code will be deactivated</li>
+                <li>❌ You won't be able to attend classes</li>
+                <li>❌ Your member benefits will be suspended</li>
+            </ul>
+            <p style="color: #d63031; font-weight: bold;">
+                Renew before {{expiry_date}} to avoid any interruption in your membership!
+            </p>
+        </div>
+        
+        <div style="text-align: center; margin: 30px 0;">
+            <p style="font-size: 18px; color: #00b894;">
+                <strong>We can't wait to see you continue your fitness journey with us!</strong>
+            </p>
+            <p>Thank you for being a valued member of the AfrGym community. 🙏</p>
+        </div>
+    </div>
+    
+    <div class="footer">
+        <p>This renewal reminder was sent to {{user_email}}</p>
+        <p>{{gym_name}} | {{gym_url}}</p>
+        <p><small>You received this email because your membership is expiring soon.</small></p>
+    </div>
+</body>
+</html>
