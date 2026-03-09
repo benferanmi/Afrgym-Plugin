@@ -292,7 +292,7 @@ class Gym_Product_Service
     }
 
     /**
-     * Record product sale
+     * Record product sale - UPDATED WITH NOTIFICATIONS
      */
     public function record_sale($product_id, $quantity, $note = '')
     {
@@ -347,13 +347,107 @@ class Gym_Product_Service
             "Sale recorded: {$quantity} units by {$admin_name} ({$gym_name})"
         );
 
+        // Get updated product info
+        $updated_product = $this->get_product($product_id);
+
+        // Send notification email - NEW
+        $this->send_sale_notification($updated_product, $sale_data, $current_admin, $note);
+
         return array(
             'sale_id' => $wpdb->insert_id,
-            'product' => $this->get_product($product_id),
+            'product' => $updated_product,
             'quantity_sold' => $quantity,
             'total_amount' => $sale_data['total_amount'],
             'gym_identifier' => $this->gym_identifier
         );
+    }
+
+    /**
+     * Send sale notification email to admins - NEW METHOD
+     */
+    private function send_sale_notification($product, $sale_data, $admin, $note)
+    {
+        // Check if notifications are enabled
+        $notifications_enabled = Gym_Admin::get_setting('product_sale_notifications_enabled', '1');
+
+        if ($notifications_enabled !== '1') {
+            return;
+        }
+
+        // Get notification email based on gym
+        $setting_key = ($this->gym_identifier === 'afrgym_two') ?
+            'product_sale_notification_email_gym_two' :
+            'product_sale_notification_email_gym_one';
+
+        $notification_email = Gym_Admin::get_setting($setting_key, get_option('admin_email'));
+
+        // Load email template
+        $template_path = SIMPLE_GYM_ADMIN_PLUGIN_DIR . 'templates/product-sale-notification.html';
+
+        if (!file_exists($template_path)) {
+            error_log('Product sale notification template not found');
+            return;
+        }
+
+        $template = file_get_contents($template_path);
+
+        // Prepare variables
+        $gym_name = ($this->gym_identifier === 'afrgym_two') ? 'Afrgym Two' : 'Afrgym One';
+        $admin_name = $admin ? ($admin->first_name . ' ' . $admin->last_name) : 'Unknown Admin';
+
+        $quantity_left = $product['quantity_left'];
+        $low_stock_threshold = (int) Gym_Admin::get_setting('low_stock_threshold', 10);
+
+        // Build note section if note exists
+        $note_html = '';
+        if (!empty($note)) {
+            $note_html = '<div class="note-section">
+            <h4 style="margin-top: 0;">📝 Sale Note:</h4>
+            <p style="margin: 0;">' . esc_html($note) . '</p>
+        </div>';
+        }
+
+        // Build low stock alert if applicable
+        $low_stock_alert = '';
+        if ($quantity_left <= $low_stock_threshold && $quantity_left > 0) {
+            $low_stock_alert = '<div style="background: #fff3cd; border: 2px solid #ffc107; padding: 15px; border-radius: 5px; margin: 20px 0;">
+            <h4 style="margin-top: 0; color: #f57c00;">⚠️ Low Stock Warning</h4>
+            <p style="margin: 0;"><strong>' . esc_html($product['name']) . '</strong> is running low on stock. Only <strong>' . $quantity_left . ' units</strong> remaining. Consider restocking soon.</p>
+        </div>';
+        } elseif ($quantity_left === 0) {
+            $low_stock_alert = '<div style="background: #ffebee; border: 2px solid #f44336; padding: 15px; border-radius: 5px; margin: 20px 0;">
+            <h4 style="margin-top: 0; color: #d32f2f;">🚨 Out of Stock Alert</h4>
+            <p style="margin: 0;"><strong>' . esc_html($product['name']) . '</strong> is now <strong>OUT OF STOCK</strong>. Immediate restocking required.</p>
+        </div>';
+        }
+
+        // Replace placeholders
+        $replacements = array(
+            '{{gym_name}}' => $gym_name,
+            '{{product_name}}' => esc_html($product['name']),
+            '{{quantity}}' => number_format($sale_data['quantity']),
+            '{{price_per_unit}}' => number_format($product['price'], 2),
+            '{{admin_name}}' => esc_html($admin_name),
+            '{{sale_date}}' => date('F j, Y g:i A', strtotime($sale_data['sale_date'])),
+            '{{total_amount}}' => number_format($sale_data['total_amount'], 2),
+            '{{sale_note}}' => $note_html,
+            '{{quantity_left}}' => number_format($quantity_left),
+            '{{total_sold}}' => number_format($product['total_sold']),
+            '{{low_stock_alert}}' => $low_stock_alert,
+            '{{notification_time}}' => date('F j, Y g:i A')
+        );
+
+        $email_content = str_replace(array_keys($replacements), array_values($replacements), $template);
+
+        // Send email
+        $subject = sprintf('[%s] Product Sale: %s', $gym_name, $product['name']);
+
+        $headers = array(
+            'Content-Type: text/html; charset=UTF-8',
+            'From: ' . $gym_name . ' <' . get_option('admin_email') . '>'
+        );
+
+        wp_mail($notification_email, $subject, $email_content, $headers);
     }
 
     /**

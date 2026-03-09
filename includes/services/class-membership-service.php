@@ -2,6 +2,7 @@
 /**
  * Membership service for integrating with Paid Memberships Pro
  * UPDATED VERSION - Added price update functionality
+ * BUG FIXES APPLIED: Fixes 1, 2, 3, 5, 6 per bug handover document
  */
 class Gym_Membership_Service
 {
@@ -37,10 +38,13 @@ class Gym_Membership_Service
         }
 
         // Get the actual membership record from database to get correct dates
+        // FIX 1: Added enddate gate — PMPro never flips status to 'expired',
+        // so we must check enddate ourselves to avoid returning stale active rows.
         global $wpdb;
         $membership_record = $wpdb->get_row($wpdb->prepare(
             "SELECT * FROM {$wpdb->prefix}pmpro_memberships_users 
              WHERE user_id = %d AND membership_id = %d AND status = 'active' 
+             AND (enddate IS NULL OR enddate = '0000-00-00 00:00:00' OR enddate > NOW())
              ORDER BY id DESC LIMIT 1",
             $user_id,
             $membership_level->id
@@ -72,10 +76,24 @@ class Gym_Membership_Service
                 $expiry_date = date('Y-m-d H:i:s', strtotime($membership_record->enddate));
                 $is_active = strtotime($expiry_date) > time();
             } else {
-                // No expiry date means lifetime membership
-                $expiry_date = null;
-                $is_active = true;
+                // FIX 2: Null/zero enddate must check level expiration settings
+                // before treating as a lifetime membership.
+                if ($this->is_lifetime_membership($membership_record->enddate, $membership_level->id)) {
+                    $expiry_date = null;
+                    $is_active = true;
+                } else {
+                    // Level is configured to expire but enddate is missing — fail safe: treat as expired.
+                    $expiry_date = null;
+                    $is_active = false;
+                }
             }
+        }
+
+        // FIX 1 (continued): If the enddate gate caused $membership_record to be null
+        // (i.e. a row exists in DB with status='active' but enddate has passed),
+        // we must NOT leave $is_active as the default true.
+        if (!$membership_record) {
+            $is_active = false;
         }
 
         // Get pause status
@@ -86,7 +104,8 @@ class Gym_Membership_Service
         $is_visit_based = in_array($membership_level->id, $this->visit_based_plans);
 
         if ($is_visit_based) {
-            $visit_info = $this->get_user_visit_info($user_id, $start_date);
+            // FIX 3: Pass expiry_date so get_user_visit_info() can hard-stop on expired memberships.
+            $visit_info = $this->get_user_visit_info($user_id, $start_date, $expiry_date);
 
             // For visit-based plans, also check if visits are exhausted
             if ($visit_info['remaining_visits'] <= 0 && $visit_info['is_current_cycle']) {
@@ -113,6 +132,36 @@ class Gym_Membership_Service
         }
 
         return $membership_data;
+    }
+
+    /**
+     * FIX 2: Helper — determine if a null/zero enddate means a genuine lifetime membership.
+     * If the PMPro level has expiration_number > 0 the plan is configured to expire,
+     * so a missing enddate is treated as bad data and we fail safe (return false = not lifetime).
+     * Only returns true (lifetime) when the level has NO expiration settings at all.
+     *
+     * @param string|null $enddate      The raw enddate value from the DB row.
+     * @param int         $level_id     The PMPro level ID.
+     * @return bool
+     */
+    private function is_lifetime_membership($enddate, $level_id)
+    {
+        // If enddate is actually set and non-zero, it is not a lifetime membership.
+        if (!empty($enddate) && $enddate !== '0000-00-00 00:00:00') {
+            return false;
+        }
+
+        // enddate is null/zero — check whether the level is configured to expire.
+        if (function_exists('pmpro_getLevel') && $level_id) {
+            $level = pmpro_getLevel($level_id);
+            if ($level && !empty($level->expiration_number) && (int) $level->expiration_number > 0) {
+                // Level IS configured to expire — missing enddate is bad data, fail safe.
+                return false;
+            }
+        }
+
+        // Level has no expiration settings — genuine lifetime membership.
+        return true;
     }
 
 
@@ -199,8 +248,13 @@ class Gym_Membership_Service
                 $this->clear_visit_tracking($user_id);
             }
 
-            // Log the membership change
-            $log_message = "Membership changed to: {$level->name}";
+            // Log the membership change with gym tracking
+            $gym_admin = Gym_Admin::get_current_gym_admin_full();
+            $gym_suffix = '';
+            if ($gym_admin) {
+                $gym_suffix = " [Assigned by: {$gym_admin['gym_name']}]";
+            }
+            $log_message = "Membership changed to: {$level->name}{$gym_suffix}";
             if ($formatted_end_date) {
                 $log_message .= " (expires: " . date('Y-m-d', strtotime($formatted_end_date)) . ")";
             }
@@ -208,6 +262,9 @@ class Gym_Membership_Service
                 $log_message .= " - Visit-based plan with {$this->default_monthly_visits} monthly visits";
             }
             Gym_Admin::add_user_note($user_id, $log_message);
+
+            $this->send_membership_notification($user_id, 'assigned', $formatted_start_date, $formatted_end_date, $level_id);
+
 
             return array(
                 'success' => true,
@@ -381,16 +438,22 @@ class Gym_Membership_Service
             }
         }
 
-        // Log the membership change
+        // Log the membership change with gym tracking
+        $gym_admin = Gym_Admin::get_current_gym_admin_full();
+        $gym_suffix = '';
+        if ($gym_admin) {
+            $gym_suffix = " [Updated by: {$gym_admin['gym_name']}]";
+        }
+
         $log_message = '';
         if ($update_type === 'same_level_date_update') {
-            $log_message = "Membership dates updated for {$level->name}";
+            $log_message = "Membership dates updated for {$level->name}{$gym_suffix}";
         } elseif ($update_type === 'same_level_reactivation') {
-            $log_message = "Membership reactivated for {$level->name}";
+            $log_message = "Membership reactivated for {$level->name}{$gym_suffix}";
         } elseif ($update_type === 'level_change') {
-            $log_message = "Membership updated from {$current_membership['level_name']} to {$level->name}";
+            $log_message = "Membership updated from {$current_membership['level_name']} to {$level->name}{$gym_suffix}";
         } else {
-            $log_message = "New membership assigned: {$level->name}";
+            $log_message = "New membership assigned: {$level->name}{$gym_suffix}";
         }
 
         if ($formatted_end_date) {
@@ -416,6 +479,8 @@ class Gym_Membership_Service
             return new WP_Error('update_verification_failed', 'Membership update could not be verified.');
         }
 
+        $this->send_membership_notification($user_id, 'updated', $formatted_start_date, $formatted_end_date, $level_id);
+
         // Return the updated membership
         return array(
             'success' => true,
@@ -423,11 +488,9 @@ class Gym_Membership_Service
             'membership' => $fresh_membership,
             'update_type' => $update_type
         );
-    }
-
-    /**
-     * Setup visit tracking for user
-     */
+    }   /**
+        * Setup visit tracking for user
+        */
     private function setup_visit_tracking($user_id, $monthly_visits)
     {
         update_user_meta($user_id, 'membership_visit_allowance', (int) $monthly_visits);
@@ -453,11 +516,13 @@ class Gym_Membership_Service
         global $wpdb;
 
         // Get the most recent active membership directly from database
+        // FIX 1: Added enddate gate — same reason as in get_user_membership().
         $membership_record = $wpdb->get_row($wpdb->prepare(
             "SELECT mu.*, ml.name, ml.description 
          FROM {$wpdb->prefix}pmpro_memberships_users mu
          JOIN {$wpdb->prefix}pmpro_membership_levels ml ON mu.membership_id = ml.id
          WHERE mu.user_id = %d AND mu.status = 'active' 
+         AND (mu.enddate IS NULL OR mu.enddate = '0000-00-00 00:00:00' OR mu.enddate > NOW())
          ORDER BY mu.id DESC LIMIT 1",
             $user_id
         ));
@@ -497,9 +562,15 @@ class Gym_Membership_Service
             $expiry_date = date('Y-m-d H:i:s', strtotime($membership_record->enddate));
             $is_active = strtotime($expiry_date) > time();
         } else {
-            // No expiry date means lifetime membership
-            $expiry_date = null;
-            $is_active = true;
+            // FIX 2: Null/zero enddate — check level expiration settings before treating as lifetime.
+            if ($this->is_lifetime_membership($membership_record->enddate, $membership_record->membership_id)) {
+                $expiry_date = null;
+                $is_active = true;
+            } else {
+                // Level is configured to expire but enddate is missing — fail safe: treat as expired.
+                $expiry_date = null;
+                $is_active = false;
+            }
         }
 
         // Get pause status
@@ -510,7 +581,8 @@ class Gym_Membership_Service
         $visit_info = null;
 
         if ($is_visit_based) {
-            $visit_info = $this->get_user_visit_info($user_id, $start_date);
+            // FIX 3: Pass expiry_date so get_user_visit_info() can hard-stop on expired memberships.
+            $visit_info = $this->get_user_visit_info($user_id, $start_date, $expiry_date);
 
             // For visit-based plans, also check if visits are exhausted
             if ($visit_info['remaining_visits'] <= 0 && $visit_info['is_current_cycle']) {
@@ -1094,14 +1166,42 @@ class Gym_Membership_Service
     }
 
     /**
-     * Get user visit information for visit-based memberships
+     * Get user visit information for visit-based memberships.
+     *
+     * FIX 3: Added $membership_expiry_date parameter (defaults to null for
+     * backward compatibility). When provided and the date has passed,
+     * this method returns immediately with zero visits and expired=true —
+     * ensuring date expiry always beats visit counts.
+     *
+     * FIX 6: Fixed mktime() edge case when start_day = 1 (day 0 was invalid).
      */
-    public function get_user_visit_info($user_id, $membership_start_date = null)
+    public function get_user_visit_info($user_id, $membership_start_date = null, $membership_expiry_date = null)
     {
+        // FIX 3: Hard-stop on expired membership
+        if ($membership_expiry_date !== null && $membership_expiry_date !== '' && $membership_expiry_date !== '0000-00-00 00:00:00') {
+            $expiry_ts = strtotime($membership_expiry_date);
+            if ($expiry_ts !== false && $expiry_ts <= time()) {
+                return array(
+                    'total_visits' => 0,
+                    'remaining_visits' => 0,
+                    'used_visits' => 0,
+                    'visit_log' => array(),
+                    'cycle_start_date' => null,
+                    'cycle_end_date' => null,
+                    'next_reset_date' => null,
+                    'is_current_cycle' => false,
+                    'expired' => true,
+                );
+            }
+        }
+
         // Get current membership if start date not provided
         if (!$membership_start_date) {
             $membership = $this->get_user_membership($user_id);
             $membership_start_date = $membership['start_date'];
+            if (!$membership_expiry_date) {
+                $membership_expiry_date = $membership['expiry_date'];
+            }
         }
 
         if (!$membership_start_date) {
@@ -1115,68 +1215,45 @@ class Gym_Membership_Service
             );
         }
 
-        // Calculate current cycle dates based on membership start date
-        $start_timestamp = strtotime($membership_start_date);
+        // FIXED: Cycle = membership startdate to enddate directly.
+        // No more monthly rolling window — visits are per membership period only.
+        $cycle_start_date = date('Y-m-d', strtotime($membership_start_date));
+        $cycle_end_date = $membership_expiry_date
+            ? date('Y-m-d', strtotime($membership_expiry_date))
+            : null;
+
         $current_time = current_time('timestamp');
+        $cycle_start_ts = strtotime($cycle_start_date);
+        $cycle_end_ts = $cycle_end_date ? strtotime($cycle_end_date . ' 23:59:59') : PHP_INT_MAX;
 
-        // Calculate which monthly cycle we're in
-        $start_day = date('j', $start_timestamp);
-        $current_year = date('Y', $current_time);
-        $current_month = date('n', $current_time);
-        $current_day = date('j', $current_time);
+        $next_reset_date = $cycle_end_date
+            ? date('Y-m-d H:i:s', $cycle_end_ts + 1)
+            : null;
 
-        // Determine the current cycle start date
-        if ($current_day >= $start_day) {
-            // We're in the current month's cycle
-            $cycle_start = mktime(0, 0, 0, $current_month, $start_day, $current_year);
-            $next_month = $current_month + 1;
-            $next_year = $current_year;
-            if ($next_month > 12) {
-                $next_month = 1;
-                $next_year++;
-            }
-            $cycle_end = mktime(23, 59, 59, $next_month, $start_day - 1, $next_year);
-        } else {
-            // We're still in the previous month's cycle
-            $prev_month = $current_month - 1;
-            $prev_year = $current_year;
-            if ($prev_month < 1) {
-                $prev_month = 12;
-                $prev_year--;
-            }
-            $cycle_start = mktime(0, 0, 0, $prev_month, $start_day, $prev_year);
-            $cycle_end = mktime(23, 59, 59, $current_month, $start_day - 1, $current_year);
-        }
-
-        $cycle_start_date = date('Y-m-d', $cycle_start);
-        $cycle_end_date = date('Y-m-d', $cycle_end);
-        $next_reset_date = date('Y-m-d H:i:s', $cycle_end + 1);
-
-        // Get visit data from user meta
+        // Get visit allowance
         $total_visits = (int) get_user_meta($user_id, 'membership_visit_allowance', true);
         if ($total_visits <= 0) {
             $total_visits = $this->default_monthly_visits;
             update_user_meta($user_id, 'membership_visit_allowance', $total_visits);
         }
 
+        // Get visit log
         $visit_log = get_user_meta($user_id, 'membership_visit_log', true);
         if (!is_array($visit_log)) {
             $visit_log = array();
         }
 
-        // Filter visit log for current cycle
+        // Filter visits that fall within this membership period only
         $current_cycle_visits = array();
         foreach ($visit_log as $visit_date) {
-            if ($visit_date >= $cycle_start_date && $visit_date <= $cycle_end_date) {
+            if ($visit_date >= $cycle_start_date && ($cycle_end_date === null || $visit_date <= $cycle_end_date)) {
                 $current_cycle_visits[] = $visit_date;
             }
         }
 
         $used_visits = count($current_cycle_visits);
         $remaining_visits = max(0, $total_visits - $used_visits);
-
-        // Check if we're in the current cycle
-        $is_current_cycle = ($current_time >= $cycle_start && $current_time <= $cycle_end);
+        $is_current_cycle = ($current_time >= $cycle_start_ts && $current_time <= $cycle_end_ts);
 
         return array(
             'total_visits' => $total_visits,
@@ -1202,12 +1279,18 @@ class Gym_Membership_Service
             return new WP_Error('not_visit_based', 'User does not have a visit-based membership plan.');
         }
 
+        // FIX 5: Block paused members from checking in — give a specific error code
+        // rather than falling through to the generic 'inactive' error below.
+        if ($membership['is_paused']) {
+            return new WP_Error('membership_paused', 'Check-in not allowed: membership is currently paused.');
+        }
+
         if (!$membership['is_active']) {
             return new WP_Error('membership_inactive', 'User membership is not active.');
         }
 
-        // Get current visit info
-        $visit_info = $this->get_user_visit_info($user_id, $membership['start_date']);
+        // FIX 3: Pass expiry_date so get_user_visit_info() can hard-stop if membership has expired.
+        $visit_info = $this->get_user_visit_info($user_id, $membership['start_date'], $membership['expiry_date']);
 
         if ($visit_info['remaining_visits'] <= 0) {
             return new WP_Error('no_visits_remaining', 'No visits remaining for current cycle.');
@@ -1233,7 +1316,7 @@ class Gym_Membership_Service
         Gym_Admin::add_user_note($user_id, "Visit check-in recorded for {$today} - Visits remaining: " . ($visit_info['remaining_visits'] - 1));
 
         // Get updated visit info
-        $updated_visit_info = $this->get_user_visit_info($user_id, $membership['start_date']);
+        $updated_visit_info = $this->get_user_visit_info($user_id, $membership['start_date'], $membership['expiry_date']);
 
         return array(
             'success' => true,
@@ -1284,4 +1367,104 @@ class Gym_Membership_Service
         );
     }
 
+    /**
+     * Send membership change notification email
+     * 
+     * @param int $user_id User ID
+     * @param string $action Action type: 'assigned' or 'updated'
+     * @param string|null $start_date Actual start date that was assigned
+     * @param string|null $end_date Actual end date that was assigned
+     * @param int|null $level_id Membership level ID that was assigned
+     */
+    private function send_membership_notification($user_id, $action = 'assigned', $start_date = null, $end_date = null, $level_id = null)
+    {
+        $email_service = new Gym_Email_Service();
+
+        $user = get_userdata($user_id);
+        if (!$user) {
+            error_log("Cannot send membership email: User {$user_id} not found");
+            return false;
+        }
+
+        // ✅ Get the actual level name from the level_id provided (not from database)
+        $level_name = 'Membership';
+        if ($level_id && function_exists('pmpro_getLevel')) {
+            $level = pmpro_getLevel($level_id);
+            if ($level) {
+                $level_name = $level->name;
+            }
+        }
+
+        // If no level_id provided, fall back to getting from database
+        if (!$level_id || $level_name === 'Membership') {
+            $membership = $this->get_user_membership($user_id);
+            $level_name = $membership['level_name'];
+        }
+
+        // ✅ FIX: Use the actual assigned dates
+        $actual_start_date = $start_date;
+        $actual_end_date = $end_date;
+
+        // If dates not provided, get from database as fallback
+        if (!$actual_start_date || !$actual_end_date) {
+            $membership = $this->get_user_membership($user_id);
+            $actual_start_date = $actual_start_date ?: $membership['start_date'];
+            $actual_end_date = $actual_end_date ?: $membership['expiry_date'];
+        }
+
+        // ✅ FIX: Proper expiry date formatting with fallback
+        $formatted_expiry = 'Lifetime';
+        if ($actual_end_date && $actual_end_date !== '0000-00-00 00:00:00') {
+            $formatted_expiry = date('F j, Y', strtotime($actual_end_date));
+        }
+
+        $formatted_start = 'Today';
+        if ($actual_start_date && $actual_start_date !== '0000-00-00 00:00:00') {
+            $formatted_start = date('F j, Y', strtotime($actual_start_date));
+        }
+
+        // Prepare custom data for the email template
+        $custom_data = array(
+            'membership_plan' => $level_name,  // ✅ FIXED: Now uses actual assigned level
+            'expiry_date' => $formatted_expiry,  // ✅ FIXED: Now uses actual assigned date
+            'start_date' => $formatted_start,
+            'action' => $action // 'assigned', 'updated', 'changed'
+        );
+
+        // Log what we're sending for debugging
+        error_log("Sending membership email for user {$user_id}:");
+        error_log("  - Level: {$level_name}");
+        error_log("  - Start: {$formatted_start}");
+        error_log("  - Expiry: {$formatted_expiry}");
+        error_log("  - Action: {$action}");
+
+        // Send welcome email for new assignments, or custom notification for updates
+        if ($action === 'assigned') {
+            $result = $email_service->send_email($user_id, 'welcome', $custom_data);
+        } else {
+            // For updates, send a custom email
+            $subject = "Your membership at {{gym_name}} has been updated";
+            $content = "
+    <h2>Membership Updated</h2>
+    <p>Hi {{first_name}},</p>
+    <p>Your gym membership has been updated with the following details:</p>
+    <div class='highlight-box'>
+        <p><strong>Membership Plan:</strong> {{membership_plan}}</p>
+        <p><strong>Start Date:</strong> {{start_date}}</p>
+        <p><strong>Expiry Date:</strong> {{expiry_date}}</p>
+    </div>
+    <p>If you have any questions about your membership, please contact us.</p>
+    <p>Thank you!</p>
+";
+            $result = $email_service->send_custom_email($user_id, $subject, $content, $custom_data);
+        }
+
+        if (is_wp_error($result)) {
+            error_log("Membership notification email failed for user {$user_id}: " . $result->get_error_message());
+            return false;
+        }
+
+        error_log("Membership notification email sent successfully to {$user->user_email}");
+        return true;
+    }
 }

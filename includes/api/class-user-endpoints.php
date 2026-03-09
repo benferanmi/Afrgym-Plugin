@@ -221,6 +221,38 @@ class Gym_User_Endpoints
             'callback' => array($this, 'get_recipient_stats'),
             'permission_callback' => array($this, 'check_permission')
         ));
+
+        register_rest_route('gym-admin/v1', '/users/export/csv', array(
+            'methods' => 'GET',
+            'callback' => array($this, 'export_users_csv'),
+            'permission_callback' => array($this, 'check_permission'),
+            'args' => array(
+                'search' => array(
+                    'type' => 'string',
+                    'sanitize_callback' => 'sanitize_text_field'
+                ),
+                'membership_status' => array(
+                    'type' => 'string',
+                    'enum' => array('all', 'active', 'inactive', 'expired')
+                )
+            )
+        ));
+
+        register_rest_route('gym-admin/v1', '/users/export/pdf', array(
+            'methods' => 'GET',
+            'callback' => array($this, 'export_users_pdf'),
+            'permission_callback' => array($this, 'check_permission'),
+            'args' => array(
+                'search' => array(
+                    'type' => 'string',
+                    'sanitize_callback' => 'sanitize_text_field'
+                ),
+                'membership_status' => array(
+                    'type' => 'string',
+                    'enum' => array('all', 'active', 'inactive', 'expired')
+                )
+            )
+        ));
     }
 
     public function get_users($request)
@@ -1458,5 +1490,424 @@ class Gym_User_Endpoints
                 'by_membership' => $by_membership
             )
         ));
+    }
+
+    /**
+     * Export users to CSV - GYM FILTERED
+     */
+    public function export_users_csv($request)
+    {
+         // ✅ ADD CORS HEADERS FIRST
+        // ✅ DYNAMIC CORS - Allow multiple origins
+        $allowed_origins = array(
+            'https://afrgym-backend.vercel.app',
+            "https://afrgym-admin-two.vercel.app",
+            'http://localhost:8080',
+            'http://localhost:3000',
+            'http://localhost:5173', // Vite default
+
+        );
+
+        $origin = isset($_SERVER['HTTP_ORIGIN']) ? $_SERVER['HTTP_ORIGIN'] : '';
+
+        if (in_array($origin, $allowed_origins)) {
+            header('Access-Control-Allow-Origin: ' . $origin);
+            header('Access-Control-Allow-Credentials: true');
+        }
+
+        header('Access-Control-Allow-Methods: GET, OPTIONS');
+        header('Access-Control-Allow-Headers: Authorization, Content-Type');
+
+
+
+        $search = $request->get_param('search');
+        $membership_status = $request->get_param('membership_status') ?: 'all';
+
+        // ✅ Get current gym identifier
+        $current_admin = Gym_Admin::get_current_gym_admin();
+        $gym_identifier = $current_admin ? $current_admin->gym_identifier : 'afrgym_one';
+
+        // ✅ Get users filtered by gym
+        $users = $this->get_filtered_users_for_export($search, $membership_status, $gym_identifier);
+
+        if (empty($users)) {
+            return new WP_Error('no_users', 'No users found to export.', array('status' => 404));
+        }
+
+        // Set headers for CSV download
+        header('Content-Type: text/csv; charset=utf-8');
+        header('Content-Disposition: attachment; filename="gym-users-' . date('Y-m-d') . '.csv"');
+        header('Pragma: no-cache');
+        header('Expires: 0');
+
+        // Open output stream
+        $output = fopen('php://output', 'w');
+
+        // Add UTF-8 BOM for Excel compatibility
+        fprintf($output, chr(0xEF) . chr(0xBB) . chr(0xBF));
+
+        // Write CSV header
+        fputcsv($output, array(
+            'ID',
+            'Username',
+            'Full Name',
+            'Email',
+            'Phone',
+            'Membership Plan',
+            'Membership Status',
+            'Start Date',
+            'Expiry Date',
+            'QR Code',
+            'Email Verified',
+            'Registration Date',
+            'Profile Picture URL'
+        ));
+
+        // Write user data
+        foreach ($users as $user) {
+            $user_data = $this->format_user_data($user);
+
+            fputcsv($output, array(
+                $user_data['id'],
+                $user_data['username'],
+                $user_data['display_name'],
+                $user_data['email'],
+                $user_data['phone'] ?: 'N/A',
+                $user_data['membership']['level_name'] ?: 'No Membership',
+                $user_data['membership']['status'] ?: 'N/A',
+                $user_data['membership']['start_date'] ?: 'N/A',
+                $user_data['membership']['expiry_date'] ?: 'N/A',
+                $user_data['qr_code']['unique_id'] ?: 'Not Generated',
+                $user_data['email_verified'] ? 'Yes' : 'No',
+                date('Y-m-d H:i', strtotime($user_data['registered'])),
+                $user_data['profile_picture_url'] ?: 'N/A'
+            ));
+        }
+
+        fclose($output);
+        exit;
+    }
+
+    /**
+     * Export users to PDF - GYM FILTERED
+     */
+    public function export_users_pdf($request)
+    {
+         // ✅ ADD CORS HEADERS FIRST
+        // ✅ DYNAMIC CORS - Allow multiple origins
+        $allowed_origins = array(
+            'https://afrgym-backend.vercel.app',
+            "https://afrgym-admin-two.vercel.app",
+            'http://localhost:8080',
+            'http://localhost:3000',
+            'http://localhost:5173', // Vite default
+
+        );
+
+        $origin = isset($_SERVER['HTTP_ORIGIN']) ? $_SERVER['HTTP_ORIGIN'] : '';
+
+        if (in_array($origin, $allowed_origins)) {
+            header('Access-Control-Allow-Origin: ' . $origin);
+            header('Access-Control-Allow-Credentials: true');
+        }
+
+        header('Access-Control-Allow-Methods: GET, OPTIONS');
+        header('Access-Control-Allow-Headers: Authorization, Content-Type');
+
+        $search = $request->get_param('search');
+        $membership_status = $request->get_param('membership_status') ?: 'all';
+
+        // ✅ Get current gym identifier
+        $current_admin = Gym_Admin::get_current_gym_admin();
+        $gym_identifier = $current_admin ? $current_admin->gym_identifier : 'afrgym_one';
+
+        // ✅ Get users filtered by gym
+        $users = $this->get_filtered_users_for_export($search, $membership_status, $gym_identifier);
+
+        if (empty($users)) {
+            return new WP_Error('no_users', 'No users found to export.', array('status' => 404));
+        }
+
+        // Generate HTML for PDF
+        $html = $this->generate_pdf_html($users);
+
+        // Set headers for PDF download
+        header('Content-Type: application/pdf');
+        header('Content-Disposition: attachment; filename="gym-users-' . date('Y-m-d') . '.pdf"');
+        header('Pragma: no-cache');
+        header('Expires: 0');
+
+        echo $html;
+        exit;
+    }
+
+    /**
+     * Get filtered users for export - WITH GYM FILTERING
+     */
+    private function get_filtered_users_for_export($search, $membership_status, $gym_identifier)
+    {
+        global $wpdb;
+
+        // ✅ FIRST: Get user IDs created by this gym (same logic as get_users_by_gym)
+        $notes_table = $wpdb->prefix . 'gym_user_notes';
+
+        $user_ids_query = "
+        SELECT DISTINCT n1.user_id
+        FROM $notes_table n1
+        INNER JOIN (
+            SELECT user_id, MIN(id) as first_note_id
+            FROM $notes_table
+            GROUP BY user_id
+        ) n2 ON n1.id = n2.first_note_id
+        WHERE n1.gym_identifier = %s
+    ";
+
+        $gym_user_ids = $wpdb->get_col($wpdb->prepare($user_ids_query, $gym_identifier));
+
+        // If no users for this gym, return empty array
+        if (empty($gym_user_ids)) {
+            return array();
+        }
+
+        // ✅ Filter to only existing users in wp_users table
+        $user_ids_string_temp = implode(',', array_map('intval', $gym_user_ids));
+
+        $existing_user_ids = $wpdb->get_col("
+        SELECT DISTINCT ID
+        FROM {$wpdb->users}
+        WHERE ID IN ($user_ids_string_temp)
+    ");
+
+        if (empty($existing_user_ids)) {
+            return array();
+        }
+
+        // ✅ Build user query args with gym-filtered IDs
+        $args = array(
+            'include' => $existing_user_ids, // Only users from this gym
+            'role__not_in' => array('administrator', 'subadmin'),
+            'number' => -1 // Get all users
+        );
+
+        // Apply search filter
+        if (!empty($search)) {
+            $args['search'] = '*' . $search . '*';
+            $args['search_columns'] = array('user_login', 'user_email', 'display_name');
+        }
+
+        // Get users
+        $users = get_users($args);
+
+        // Filter by membership status if needed
+        if ($membership_status !== 'all') {
+            $filtered_users = array();
+            $membership_service = new Gym_Membership_Service();
+
+            foreach ($users as $user) {
+                $membership = $membership_service->get_user_membership($user->ID);
+
+                $should_include = false;
+
+                switch ($membership_status) {
+                    case 'active':
+                        $should_include = ($membership['status'] === 'active' && !$membership['is_expired']);
+                        break;
+                    case 'inactive':
+                        $should_include = ($membership['level_id'] === 0);
+                        break;
+                    case 'expired':
+                        $should_include = $membership['is_expired'];
+                        break;
+                }
+
+                if ($should_include) {
+                    $filtered_users[] = $user;
+                }
+            }
+
+            return $filtered_users;
+        }
+
+        return $users;
+    }
+
+
+
+    /**
+     * Generate HTML for PDF export
+     */
+    private function generate_pdf_html($users)
+    {
+        $gym_name = get_bloginfo('name');
+        $current_date = date('F j, Y g:i A');
+        $user_count = count($users);
+
+        ob_start();
+        ?>
+        <!DOCTYPE html>
+        <html>
+
+        <head>
+            <meta charset="UTF-8">
+            <title>Gym Users Report - <?php echo esc_html($gym_name); ?></title>
+            <style>
+                @page {
+                    margin: 20mm;
+                    size: A4 landscape;
+                }
+
+                body {
+                    font-family: Arial, sans-serif;
+                    font-size: 9pt;
+                    line-height: 1.3;
+                    color: #333;
+                }
+
+                .header {
+                    text-align: center;
+                    margin-bottom: 20px;
+                    padding-bottom: 15px;
+                    border-bottom: 3px solid #667eea;
+                }
+
+                .header h1 {
+                    margin: 0;
+                    color: #667eea;
+                    font-size: 24pt;
+                }
+
+                .header p {
+                    margin: 5px 0;
+                    color: #666;
+                }
+
+                table {
+                    width: 100%;
+                    border-collapse: collapse;
+                    margin-top: 15px;
+                    font-size: 8pt;
+                }
+
+                th {
+                    background: #667eea;
+                    color: white;
+                    padding: 8px 5px;
+                    text-align: left;
+                    font-weight: bold;
+                    border: 1px solid #5568d3;
+                }
+
+                td {
+                    padding: 6px 5px;
+                    border: 1px solid #ddd;
+                }
+
+                tr:nth-child(even) {
+                    background-color: #f8f9fa;
+                }
+
+                .status-active {
+                    color: #28a745;
+                    font-weight: bold;
+                }
+
+                .status-expired {
+                    color: #dc3545;
+                    font-weight: bold;
+                }
+
+                .status-inactive {
+                    color: #6c757d;
+                }
+
+                .footer {
+                    margin-top: 20px;
+                    padding-top: 15px;
+                    border-top: 2px solid #e9ecef;
+                    text-align: center;
+                    font-size: 8pt;
+                    color: #666;
+                }
+
+                .img-thumbnail {
+                    width: 40px;
+                    height: 40px;
+                    object-fit: cover;
+                    border-radius: 4px;
+                    border: 1px solid #ddd;
+                }
+            </style>
+        </head>
+
+        <body>
+            <div class="header">
+                <h1><?php echo esc_html($gym_name); ?></h1>
+                <p><strong>User Directory Report</strong></p>
+                <p>Generated: <?php echo $current_date; ?> | Total Users: <?php echo $user_count; ?></p>
+            </div>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width: 30px;">ID</th>
+                        <th style="width: 80px;">Username</th>
+                        <th style="width: 100px;">Full Name</th>
+                        <th style="width: 110px;">Email</th>
+                        <th style="width: 85px;">Phone</th>
+                        <th style="width: 80px;">Membership</th>
+                        <th style="width: 60px;">Status</th>
+                        <th style="width: 75px;">Expiry Date</th>
+                        <th style="width: 75px;">QR Code</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php foreach ($users as $user):
+                        $user_data = $this->format_user_data($user);
+                        $membership = $user_data['membership'];
+
+                        // Determine status class
+                        $status_class = 'status-inactive';
+                        if ($membership['status'] === 'active' && !$membership['is_expired']) {
+                            $status_class = 'status-active';
+                        } elseif ($membership['is_expired']) {
+                            $status_class = 'status-expired';
+                        }
+                        ?>
+                        <tr>
+                            <td><?php echo esc_html($user_data['id']); ?></td>
+                            <td><?php echo esc_html($user_data['username']); ?></td>
+                            <td><strong><?php echo esc_html($user_data['display_name']); ?></strong></td>
+                            <td><?php echo esc_html($user_data['email']); ?></td>
+                            <td><?php echo esc_html($user_data['phone'] ?: 'N/A'); ?></td>
+                            <td><?php echo esc_html($membership['level_name'] ?: 'None'); ?></td>
+                            <td class="<?php echo $status_class; ?>">
+                                <?php
+                                if ($membership['is_expired']) {
+                                    echo 'Expired';
+                                } elseif ($membership['status'] === 'active') {
+                                    echo 'Active';
+                                } else {
+                                    echo 'Inactive';
+                                }
+                                ?>
+                            </td>
+                            <td><?php echo $membership['expiry_date'] ? date('M j, Y', strtotime($membership['expiry_date'])) : 'N/A'; ?>
+                            </td>
+                            <td><?php echo esc_html($user_data['qr_code']['unique_id'] ?: 'Not Generated'); ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+
+            <div class="footer">
+                <p><strong><?php echo esc_html($gym_name); ?></strong> | User Directory Report</p>
+                <p>This report contains confidential information. Handle with care.</p>
+                <p style="margin-top: 10px;">Generated on <?php echo $current_date; ?></p>
+            </div>
+        </body>
+
+        </html>
+        <?php
+        return ob_get_clean();
     }
 }

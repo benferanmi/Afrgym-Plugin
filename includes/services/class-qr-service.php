@@ -2,6 +2,7 @@
 /**
  * QR Code service for managing gym member QR codes
  * Supports dual-mode operation with Ben's QR Code Manager plugin
+ * UPDATED: Added username lookup support
  */
 class Gym_QR_Service
 {
@@ -183,32 +184,65 @@ class Gym_QR_Service
             'generated_by' => 'gym_plugin'
         );
     }
-
     /**
-     * Find user by QR code
+     * 🆕 UPDATED: Find user by QR code, username, email, OR phone number
+     * Supports quad lookup mode - tries QR code, username, email, then phone
      */
     public function lookup_user_by_code($unique_id)
     {
         if (empty($unique_id)) {
-            return new WP_Error('empty_code', 'QR code cannot be empty.');
+            return new WP_Error('empty_code', 'Search term cannot be empty.');
         }
 
         global $wpdb;
+        $lookup_method = null;
+        $user_id = null;
 
-        // Search for user with this unique_id
+        // STEP 1: Try QR code lookup first
         $user_id = $wpdb->get_var($wpdb->prepare(
             "SELECT user_id FROM {$wpdb->usermeta} WHERE meta_key = 'unique_id' AND meta_value = %s LIMIT 1",
             $unique_id
         ));
 
-        if (!$user_id) {
-            return new WP_Error('user_not_found', 'No user found with this QR code.');
+        if ($user_id) {
+            $lookup_method = 'qr_code';
+        } else {
+            // STEP 2: Try username/login lookup
+            $user = get_user_by('login', $unique_id);
+            if ($user) {
+                $user_id = $user->ID;
+                $lookup_method = 'username';
+            } else {
+                // STEP 3: Try email lookup
+                $user = get_user_by('email', $unique_id);
+                if ($user) {
+                    $user_id = $user->ID;
+                    $lookup_method = 'email';
+                } else {
+                    // STEP 4: Try phone lookup
+                    $user_id = $wpdb->get_var($wpdb->prepare(
+                        "SELECT user_id FROM {$wpdb->usermeta} WHERE meta_key = 'phone' AND meta_value = %s LIMIT 1",
+                        $unique_id
+                    ));
+
+                    if ($user_id) {
+                        $lookup_method = 'phone';
+                    } else {
+                        // Not found by any method
+                        return new WP_Error('user_not_found', 'No user found with this QR code, username, email, or phone number.');
+                    }
+                }
+            }
         }
 
+        // Get user object
         $user = get_user_by('id', $user_id);
         if (!$user) {
             return new WP_Error('user_not_found', 'User data not found.');
         }
+
+        // Get the user's actual QR code (in case they were found by username/email/phone)
+        $actual_unique_id = get_user_meta($user_id, 'unique_id', true);
 
         // Get membership information
         $membership_service = new Gym_Membership_Service();
@@ -217,19 +251,22 @@ class Gym_QR_Service
         return array(
             'success' => true,
             'user_found' => true,
+            'lookup_method' => $lookup_method, // 'qr_code', 'username', 'email', or 'phone'
+            'search_term' => $unique_id,
             'user' => array(
                 'id' => $user->ID,
+                'username' => $user->user_login,
                 'name' => $user->display_name,
                 'email' => $user->user_email,
                 'first_name' => get_user_meta($user_id, 'first_name', true),
                 'last_name' => get_user_meta($user_id, 'last_name', true),
+                'phone' => get_user_meta($user_id, 'phone', true),
                 'membership' => array(
                     'plan' => $membership['level_name'] ?? 'No Membership',
                     'status' => $membership['status'] ?? 'inactive',
                     'expiry_date' => $membership['expiry_date'] ?? null
                 ),
-                'unique_id' => $unique_id,
-                'phone' => get_user_meta($user_id, 'phone', true)
+                'unique_id' => $actual_unique_id ?: null
             )
         );
     }

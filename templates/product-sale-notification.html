@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Product Sale Notification</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        line-height: 1.6;
+        color: #333;
+        max-width: 600px;
+        margin: 0 auto;
+        padding: 20px;
+        background-color: #f4f4f4;
+      }
+      .container {
+        background: white;
+        border-radius: 8px;
+        overflow: hidden;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+      }
+      .header {
+        background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
+        color: white;
+        text-align: center;
+        padding: 30px 20px;
+      }
+      .header h1 {
+        margin: 0;
+        font-size: 28px;
+      }
+      .content {
+        padding: 30px;
+      }
+      .sale-info {
+        background: #f8f9fa;
+        border-left: 4px solid #28a745;
+        padding: 20px;
+        margin: 20px 0;
+        border-radius: 5px;
+      }
+      .sale-info h3 {
+        margin-top: 0;
+        color: #28a745;
+      }
+      .detail-row {
+        display: flex;
+        justify-content: space-between;
+        padding: 10px 0;
+        border-bottom: 1px solid #e9ecef;
+      }
+      .detail-row:last-child {
+        border-bottom: none;
+      }
+      .detail-label {
+        font-weight: 600;
+        color: #666;
+      }
+      .detail-value {
+        color: #333;
+        font-weight: 500;
+      }
+      .total-amount {
+        background: #28a745;
+        color: white;
+        padding: 15px;
+        border-radius: 5px;
+        text-align: center;
+        margin: 20px 0;
+        font-size: 24px;
+        font-weight: bold;
+      }
+      .note-section {
+        background: #fff3cd;
+        border: 1px solid #ffc107;
+        padding: 15px;
+        border-radius: 5px;
+        margin: 20px 0;
+      }
+      .footer {
+        background: #f8f9fa;
+        padding: 20px;
+        text-align: center;
+        color: #666;
+        font-size: 14px;
+        border-top: 1px solid #e9ecef;
+      }
+      .timestamp {
+        color: #999;
+        font-size: 12px;
+        font-style: italic;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <h1>💰 New Product Sale</h1>
+        <p>{{gym_name}}</p>
+      </div>
+
+      <div class="content">
+        <p>Hello Admin,</p>
+        <p>A new product sale has been recorded in the system.</p>
+
+        <div class="sale-info">
+          <h3>📦 Sale Details</h3>
+          <div class="detail-row">
+            <span class="detail-label">Product:</span>
+            <span class="detail-value">{{product_name}}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Quantity Sold:</span>
+            <span class="detail-value">{{quantity}} units</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Price per Unit:</span>
+            <span class="detail-value">₦{{price_per_unit}}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Sold By:</span>
+            <span class="detail-value">{{admin_name}}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Sale Date:</span>
+            <span class="detail-value">{{sale_date}}</span>
+          </div>
+        </div>
+
+        <div class="total-amount">Total Amount: ₦{{total_amount}}</div>
+
+        {{sale_note}}
+
+        <div
+          style="
+            background: #e3f2fd;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 20px 0;
+          "
+        >
+          <h4 style="margin-top: 0; color: #1976d2">📊 Updated Stock Info</h4>
+          <div class="detail-row">
+            <span class="detail-label">Stock Remaining:</span>
+            <span class="detail-value">{{quantity_left}} units</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Total Sold (All Time):</span>
+            <span class="detail-value">{{total_sold}} units</span>
+          </div>
+        </div>
+
+        {{low_stock_alert}}
+
+        <p class="timestamp">Notification sent: {{notification_time}}</p>
+      </div>
+
+      <div class="footer">
+        <p><strong>{{gym_name}}</strong></p>
+        <p>Product Management System</p>
+        <p>
+          <small
+            >This is an automated notification. You're receiving this because
+            you're an administrator.</small
+          >
+        </p>
+      </div>
+    </div>
+  </body>
+</html>

@@ -1,7 +1,8 @@
 <?php
 /**
  * Enhanced QR Code API endpoints with Visit Tracking and Avatar Support
- * UPDATED VERSION - Added visit info and avatar support to QR responses
+ * UPDATED VERSION - Added username lookup support to QR lookup endpoint
+ * BUG FIX APPLIED: Fix 4 — defence-in-depth hard expiry check in lookup_and_checkin()
  */
 class Gym_QR_Endpoints
 {
@@ -54,7 +55,7 @@ class Gym_QR_Endpoints
             )
         ));
 
-        // ENHANCED: Lookup user by QR code with visit tracking and avatar support
+        // 🆕 ENHANCED: Lookup user by QR code, username, email, OR phone number with visit tracking
         register_rest_route('gym-admin/v1', '/qr/lookup', array(
             'methods' => 'GET',
             'callback' => array($this, 'lookup_user_by_qr'),
@@ -63,8 +64,9 @@ class Gym_QR_Endpoints
                 'unique_id' => array(
                     'required' => true,
                     'type' => 'string',
+                    'description' => 'QR code, username, email, or phone number to lookup',
                     'validate_callback' => function ($param) {
-                        return !empty($param) && strlen($param) <= 20;
+                        return !empty($param) && strlen($param) <= 100;
                     },
                     'sanitize_callback' => 'sanitize_text_field'
                 ),
@@ -77,7 +79,7 @@ class Gym_QR_Endpoints
             )
         ));
 
-        // QR lookup with check-in action
+        // 🆕 QR lookup with check-in action - now supports QR code, username, email, and phone
         register_rest_route('gym-admin/v1', '/qr/lookup-checkin', array(
             'methods' => 'POST',
             'callback' => array($this, 'lookup_and_checkin'),
@@ -86,8 +88,9 @@ class Gym_QR_Endpoints
                 'unique_id' => array(
                     'required' => true,
                     'type' => 'string',
+                    'description' => 'QR code, username, email, or phone number for check-in',
                     'validate_callback' => function ($param) {
-                        return !empty($param) && strlen($param) <= 20;
+                        return !empty($param) && strlen($param) <= 100;
                     },
                     'sanitize_callback' => 'sanitize_text_field'
                 )
@@ -161,7 +164,14 @@ class Gym_QR_Endpoints
     }
 
     /**
-     * ENHANCED: Lookup user by QR code with visit tracking and avatar support
+     * 🆕 ENHANCED: Lookup user by QR code, username, email, OR phone number
+     * with visit tracking and avatar support
+     * 
+     * Usage examples:
+     * - GET /qr/lookup?unique_id=ABC12345        (QR code lookup)
+     * - GET /qr/lookup?unique_id=john_doe        (Username lookup)
+     * - GET /qr/lookup?unique_id=john@email.com  (Email lookup)
+     * - GET /qr/lookup?unique_id=08012345678     (Phone number lookup)
      */
     public function lookup_user_by_qr($request)
     {
@@ -171,7 +181,7 @@ class Gym_QR_Endpoints
         if (empty($unique_id)) {
             return new WP_Error(
                 'missing_unique_id',
-                'QR code unique_id parameter is required.',
+                'Search parameter (QR code, username, email, or phone) is required.',
                 array('status' => 400)
             );
         }
@@ -240,7 +250,55 @@ class Gym_QR_Endpoints
     }
 
     /**
-     * Lookup user and perform check-in in one action
+     * FIX 4: Defence-in-depth hard expiry check — queries the PMPro memberships
+     * table directly (bypassing the service layer entirely) to confirm the
+     * member's enddate has not passed.  Called at the very top of
+     * lookup_and_checkin() before the service layer is involved.
+     *
+     * Returns true  → membership is not date-expired (safe to proceed).
+     * Returns false → membership IS date-expired (deny access immediately).
+     *
+     * Note: null/zero enddates are treated as not-expired here because a
+     * genuine lifetime membership has no enddate; the service layer's
+     * is_lifetime_membership() helper handles the finer distinction.
+     *
+     * @param int $user_id
+     * @return bool
+     */
+    private function hard_check_membership_not_expired($user_id)
+    {
+        global $wpdb;
+
+        $record = $wpdb->get_row($wpdb->prepare(
+            "SELECT enddate FROM {$wpdb->prefix}pmpro_memberships_users
+             WHERE user_id = %d AND status = 'active'
+             ORDER BY id DESC LIMIT 1",
+            $user_id
+        ));
+
+        // No active membership row at all — deny
+        if (!$record) {
+            return false;
+        }
+
+        // Null or zero enddate — no date expiry, let service layer decide
+        if (empty($record->enddate) || $record->enddate === '0000-00-00 00:00:00') {
+            return true;
+        }
+
+        // Check whether the enddate is still in the future
+        return strtotime($record->enddate) > time();
+    }
+
+    /**
+     * 🆕 Lookup user and perform check-in in one action
+     * Now supports QR code, username, email, and phone number lookup
+     * 
+     * Usage examples:
+     * - POST /qr/lookup-checkin with body: {"unique_id": "ABC12345"}        (QR code)
+     * - POST /qr/lookup-checkin with body: {"unique_id": "john_doe"}        (Username)
+     * - POST /qr/lookup-checkin with body: {"unique_id": "john@email.com"}  (Email)
+     * - POST /qr/lookup-checkin with body: {"unique_id": "08012345678"}     (Phone)
      */
     public function lookup_and_checkin($request)
     {
@@ -249,12 +307,12 @@ class Gym_QR_Endpoints
         if (empty($unique_id)) {
             return new WP_Error(
                 'missing_unique_id',
-                'QR code unique_id parameter is required.',
+                'Search parameter (QR code, username, email, or phone) is required.',
                 array('status' => 400)
             );
         }
 
-        // First, lookup the user
+        // First, lookup the user (now supports QR, username, email, and phone)
         $lookup_result = $this->qr_service->lookup_user_by_code($unique_id);
 
         if (is_wp_error($lookup_result)) {
@@ -265,12 +323,33 @@ class Gym_QR_Endpoints
             return rest_ensure_response(array(
                 'success' => false,
                 'user_found' => false,
-                'message' => 'No user found with this QR code'
+                'message' => 'No user found with this QR code, username, email, or phone number'
             ));
         }
 
         $user_id = $lookup_result['user']['id'];
         $user = get_user_by('id', $user_id);
+
+        // FIX 4: Hard expiry check — this is the defence-in-depth gate at the
+        // endpoint level.  It runs BEFORE the service layer so that even if the
+        // service has stale cached data we still block access on date expiry.
+        if (!$this->hard_check_membership_not_expired($user_id)) {
+            return rest_ensure_response(array(
+                'success'       => false,
+                'user_found'    => true,
+                'access_denied' => true,
+                'message'       => 'Access denied: Membership has expired.',
+                'reason'        => 'membership_expired',
+                'lookup_method' => $lookup_result['lookup_method'],
+                'search_term'   => $lookup_result['search_term'],
+                'user'          => array(
+                    'id'       => $user_id,
+                    'username' => $lookup_result['user']['username'],
+                    'name'     => $lookup_result['user']['name'],
+                    'email'    => $lookup_result['user']['email'],
+                ),
+            ));
+        }
 
         // Get fresh membership data
         $membership_service = new Gym_Membership_Service();
@@ -280,13 +359,17 @@ class Gym_QR_Endpoints
         $response = array(
             'success' => true,
             'user_found' => true,
+            'lookup_method' => $lookup_result['lookup_method'], // 'qr_code', 'username', 'email', or 'phone'
+            'search_term' => $lookup_result['search_term'],
             'user' => array(
                 'id' => $user_id,
+                'username' => $lookup_result['user']['username'],
                 'name' => $lookup_result['user']['name'],
                 'email' => $lookup_result['user']['email'],
+                'phone' => $lookup_result['user']['phone'],
                 'avatar_url' => get_avatar_url($user_id),
                 'profile_picture_url' => get_user_meta($user_id, 'profile_picture_url', true) ?: null,
-                'unique_id' => $unique_id,
+                'unique_id' => $lookup_result['user']['unique_id'],
                 'membership' => $membership
             ),
             'checkin_attempted' => false,
@@ -334,7 +417,7 @@ class Gym_QR_Endpoints
             }
 
             // Get updated visit info
-            $updated_visit_info = $membership_service->get_user_visit_info($user_id, $membership['start_date']);
+            $updated_visit_info = $membership_service->get_user_visit_info($user_id, $membership['start_date'], $membership['expiry_date']);
             $response['visit_status'] = array(
                 'remaining_visits' => $updated_visit_info['remaining_visits'],
                 'used_visits' => $updated_visit_info['used_visits'],
@@ -442,95 +525,5 @@ class Gym_QR_Endpoints
     public function check_permission($request)
     {
         return Gym_Admin::check_api_permission($request, 'manage_options');
-    }
-}
-
-/**
- * Enhancement to existing user endpoints for QR code search
- * This would be added to the existing Gym_User_Endpoints class
- */
-class Gym_QR_User_Search_Enhancement
-{
-    private $qr_service;
-
-    public function __construct()
-    {
-        $this->qr_service = new Gym_QR_Service();
-    }
-
-    /**
-     * Enhanced user search that includes QR code search
-     * This method can be called from the existing user endpoints
-     */
-    public function search_users_with_qr($search_params)
-    {
-        $search = isset($search_params['search']) ? sanitize_text_field($search_params['search']) : '';
-        $qr_code = isset($search_params['qr_code']) ? sanitize_text_field($search_params['qr_code']) : '';
-        $limit = isset($search_params['per_page']) ? absint($search_params['per_page']) : 20;
-        $offset = isset($search_params['offset']) ? absint($search_params['offset']) : 0;
-
-        // If searching by QR code specifically
-        if (!empty($qr_code)) {
-            return $this->qr_service->search_users_by_qr_code($qr_code, $limit, $offset);
-        }
-
-        // Check if regular search term looks like a QR code (alphanumeric, 6-8 chars)
-        if (!empty($search) && preg_match('/^[A-Za-z0-9]{6,8}$/', $search)) {
-            // Try QR search first
-            $qr_result = $this->qr_service->search_users_by_qr_code($search, $limit, $offset);
-
-            // If we found results, return them
-            if (!empty($qr_result['users'])) {
-                return $qr_result;
-            }
-
-            // Fall through to regular search if no QR results
-        }
-
-        // Regular user search logic would go here
-        // Return empty result for now since this is just the QR enhancement
-        return array(
-            'users' => array(),
-            'total' => 0,
-            'message' => 'Regular user search would be handled by existing user endpoints'
-        );
-    }
-
-    /**
-     * ENHANCED: Add QR code and visit information to user data
-     */
-    public function enhance_user_data_with_qr($user_data)
-    {
-        if (!isset($user_data['id'])) {
-            return $user_data;
-        }
-
-        $user_id = $user_data['id'];
-
-        // Add QR code data
-        $qr_data = $this->qr_service->get_user_qr_code($user_id);
-
-        if (!is_wp_error($qr_data)) {
-            $user_data['qr_code'] = array(
-                'unique_id' => $qr_data['unique_id'],
-                'qr_code_url' => $qr_data['qr_code_url'],
-                'has_qr_code' => $qr_data['has_qr_code'],
-                'generated_by' => $qr_data['generated_by']
-            );
-        }
-
-        // Add avatar URLs
-        $user_data['avatar_url'] = get_avatar_url($user_id);
-        $profile_picture_url = get_user_meta($user_id, 'profile_picture_url', true);
-        $user_data['profile_picture_url'] = !empty($profile_picture_url) ? $profile_picture_url : null;
-
-        // Add visit information for visit-based memberships
-        if (isset($user_data['membership']) && $user_data['membership']['is_visit_based']) {
-            $membership_service = new Gym_Membership_Service();
-            $visit_info = $membership_service->get_user_visit_info($user_id, $user_data['membership']['start_date']);
-            $user_data['membership']['visit_info'] = $visit_info;
-        }
-
-        return $user_data;
     }
 }

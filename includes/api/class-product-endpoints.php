@@ -294,6 +294,38 @@ class Gym_Product_Endpoints
             'callback' => array($this, 'get_categories'),
             'permission_callback' => array($this, 'check_permission')
         ));
+
+        // Gym One specific products
+        register_rest_route('gym-admin/v1', '/products/gym-one', array(
+            'methods' => 'GET',
+            'callback' => array($this, 'get_gym_one_products'),
+            'permission_callback' => array($this, 'check_permission'),
+            // same args as get_products
+        ));
+
+        // Gym Two specific products
+        register_rest_route('gym-admin/v1', '/products/gym-two', array(
+            'methods' => 'GET',
+            'callback' => array($this, 'get_gym_two_products'),
+            'permission_callback' => array($this, 'check_permission'),
+            // same args as get_products
+        ));
+
+        // Monthly stats gym-one
+        register_rest_route('gym-admin/v1', '/products/stats/monthly/gym-one', array(
+            'methods' => 'GET',
+            'callback' => array($this, 'get_gym_one_monthly_stats'),
+            'permission_callback' => array($this, 'check_permission')
+        ));
+
+        // Monthly stats gym-two
+        register_rest_route('gym-admin/v1', '/products/stats/monthly/gym-two', array(
+            'methods' => 'GET',
+            'callback' => array($this, 'get_gym_two_monthly_stats'),
+            'permission_callback' => array($this, 'check_permission')
+        ));
+
+
     }
 
     /**

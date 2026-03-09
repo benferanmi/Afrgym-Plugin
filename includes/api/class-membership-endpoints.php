@@ -1,6 +1,7 @@
 <?php
 /**
  * Membership management API endpoints - Updated with pricing functionality
+ * BUG FIX APPLIED: Fix 7 — enddate gate added to visit-based stats queries
  */
 class Gym_Membership_Endpoints
 {
@@ -197,6 +198,15 @@ class Gym_Membership_Endpoints
 
         if (is_wp_error($result)) {
             return $result;
+        }
+
+        // 🆕 ADD: Track which gym assigned the membership
+        $gym_admin = Gym_Admin::get_current_gym_admin_full();
+        if ($gym_admin) {
+            $gym_name = $gym_admin['gym_name'];
+            $admin_name = $gym_admin['admin']->first_name . ' ' . $gym_admin['admin']->last_name;
+            $note = "Membership assigned by {$admin_name} ({$gym_name})";
+            Gym_Admin::add_user_note($user_id, $note);
         }
 
         return rest_ensure_response($result);
@@ -595,17 +605,22 @@ class Gym_Membership_Endpoints
 
     /**
      * Get visit-based membership statistics
+     *
+     * FIX 7: Added enddate gate to the DB query — expired members with stale
+     * status='active' rows were being counted as active visit users.
      */
     public function get_visit_based_stats($request)
     {
         global $wpdb;
 
-        // Get all users with visit-based memberships (levels 12 and 13)
+        // FIX 7: Added enddate gate so expired rows with status='active' are excluded.
+        // Also selecting enddate so we can pass it to get_user_visit_info().
         $visit_based_users = $wpdb->get_results(
-            "SELECT DISTINCT mu.user_id, ml.name as level_name, ml.id as level_id
+            "SELECT DISTINCT mu.user_id, ml.name as level_name, ml.id as level_id, mu.enddate
              FROM {$wpdb->prefix}pmpro_memberships_users mu
              JOIN {$wpdb->prefix}pmpro_membership_levels ml ON mu.membership_id = ml.id
-             WHERE mu.status = 'active' AND ml.id IN (12, 13)"
+             WHERE mu.status = 'active' AND ml.id IN (12, 13)
+             AND (mu.enddate IS NULL OR mu.enddate = '0000-00-00 00:00:00' OR mu.enddate > NOW())"
         );
 
         $total_visit_users = count($visit_based_users);
@@ -615,7 +630,12 @@ class Gym_Membership_Endpoints
         $total_visits_remaining = 0;
 
         foreach ($visit_based_users as $user_data) {
-            $visit_info = $this->membership_service->get_user_visit_info($user_data->user_id);
+            // FIX 7 (continued): Pass expiry_date to get_user_visit_info() so the
+            // service-layer expiry guard (Fix 3) also applies here.
+            $expiry_date_val = (!empty($user_data->enddate) && $user_data->enddate !== '0000-00-00 00:00:00')
+                ? $user_data->enddate
+                : null;
+            $visit_info = $this->membership_service->get_user_visit_info($user_data->user_id, null, $expiry_date_val);
 
             if ($visit_info['is_current_cycle']) {
                 $active_this_cycle++;
@@ -644,6 +664,8 @@ class Gym_Membership_Endpoints
 
     /**
      * Get users with low visit counts
+     *
+     * FIX 7: Added enddate gate to the DB query — same issue as get_visit_based_stats().
      */
     public function get_low_visit_users($request)
     {
@@ -651,19 +673,26 @@ class Gym_Membership_Endpoints
 
         global $wpdb;
 
-        // Get all users with visit-based memberships
+        // FIX 7: Added enddate gate so expired rows with status='active' are excluded.
+        // Also selecting enddate so we can pass it to get_user_visit_info().
         $visit_based_users = $wpdb->get_results(
-            "SELECT mu.user_id, ml.name as level_name, ml.id as level_id, u.display_name, u.user_email
+            "SELECT mu.user_id, ml.name as level_name, ml.id as level_id, u.display_name, u.user_email, mu.enddate
              FROM {$wpdb->prefix}pmpro_memberships_users mu
              JOIN {$wpdb->prefix}pmpro_membership_levels ml ON mu.membership_id = ml.id
              JOIN {$wpdb->users} u ON mu.user_id = u.ID
-             WHERE mu.status = 'active' AND ml.id IN (12, 13)"
+             WHERE mu.status = 'active' AND ml.id IN (12, 13)
+             AND (mu.enddate IS NULL OR mu.enddate = '0000-00-00 00:00:00' OR mu.enddate > NOW())"
         );
 
         $low_visit_users = array();
 
         foreach ($visit_based_users as $user_data) {
-            $visit_info = $this->membership_service->get_user_visit_info($user_data->user_id);
+            // FIX 7 (continued): Pass expiry_date to get_user_visit_info() so the
+            // service-layer expiry guard (Fix 3) also applies here.
+            $expiry_date_val = (!empty($user_data->enddate) && $user_data->enddate !== '0000-00-00 00:00:00')
+                ? $user_data->enddate
+                : null;
+            $visit_info = $this->membership_service->get_user_visit_info($user_data->user_id, null, $expiry_date_val);
 
             if ($visit_info['is_current_cycle'] && $visit_info['remaining_visits'] <= $threshold) {
                 $low_visit_users[] = array(

@@ -2,8 +2,8 @@
 /**
  * Plugin Name: Simple Gym Admin
  * Description: Updating recipient stats endpoint and dashboard summary stats endpoint 
- * Version: 5.2.2
- * Updates: update recipient stats endpoint
+ * Version: 5.4.6
+ * Updates: fixing custom emamil
  * Author: Opafunso Benjamin
  * Text Domain: simple-gym-admin
  */
