@@ -573,7 +573,7 @@ class Gym_Membership_Endpoints
             return new WP_Error('user_not_found', 'User not found.', array('status' => 404));
         }
 
-        // Check if membership is actually paused
+        // Check if membership is paused
         $pause_status = $this->membership_service->get_membership_pause_status($user_id);
         if (!$pause_status['is_paused']) {
             return new WP_Error('not_paused', 'Membership is not currently paused.', array('status' => 400));
@@ -587,7 +587,6 @@ class Gym_Membership_Endpoints
 
         return rest_ensure_response($result);
     }
-
     // Get pause status endpoint
     public function get_pause_status($request)
     {

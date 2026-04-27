@@ -9,6 +9,7 @@ class Gym_Email_Service
     public function __construct()
     {
         $this->templates_dir = SIMPLE_GYM_ADMIN_PLUGIN_DIR . 'templates/';
+        $this->resend_service = new Gym_Resend_Service();
     }
 
     public function get_email_templates()
@@ -373,37 +374,85 @@ class Gym_Email_Service
         return $this->send_processed_email($user, $processed_subject, $processed_content, 'custom');
     }
 
-    // ENHANCED: Centralized email sending with better error handling
+
+
     private function send_processed_email($user, $subject, $content, $template_name)
     {
         // Log email attempt
         $log_id = Gym_Admin::log_email($user->ID, $user->user_email, $subject, $template_name);
 
-        // Send email
-        $headers = array(
-            'Content-Type: text/html; charset=UTF-8',
-            'From: ' . Gym_Admin::get_setting('email_from_name', get_bloginfo('name')) . ' <' . Gym_Admin::get_setting('email_from_address', get_option('admin_email')) . '>'
-        );
+        // Check if Resend is configured
+        $resend_key = Gym_Admin::get_setting('resend_api_key', '');
 
-        $sent = wp_mail($user->user_email, $subject, $content, $headers);
+        $from_email = Gym_Admin::get_setting('email_from_address', get_option('admin_email'));
 
-        // Update log
-        if ($sent) {
-            Gym_Admin::update_email_status($log_id, 'sent');
-            return array(
-                'success' => true,
-                'message' => 'Email sent successfully',
-                'log_id' => $log_id,
-                'recipient' => $user->user_email,
-                'template' => $template_name
+        // Generate text version
+        $text_content = wp_strip_all_tags($content);
+
+        // FIXED: Use Resend service instead of wp_mail
+        if (!empty($resend_key)) {
+            // Send via Resend
+            $result = $this->resend_service->send_email(
+                $user->user_email,
+                $subject,
+                $content,
+                $text_content
             );
+
+            if ($result['success']) {
+                Gym_Admin::update_email_status($log_id, 'sent');
+
+                return array(
+                    'success' => true,
+                    'message' => 'Email sent successfully via Resend',
+                    'log_id' => $log_id,
+                    'recipient' => $user->user_email,
+                    'template' => $template_name,
+                    'sent_via' => 'resend'
+                );
+            } else {
+                $error_msg = $result['error'] ?? 'Unknown Resend error';
+                Gym_Admin::update_email_status($log_id, 'failed', $error_msg);
+
+                return new WP_Error(
+                    'resend_failed',
+                    "Failed to send via Resend: {$error_msg}"
+                );
+            }
         } else {
-            $error_message = 'WordPress wp_mail function failed';
-            Gym_Admin::update_email_status($log_id, 'failed', $error_message);
-            return new WP_Error('send_failed', $error_message);
+            // Fallback to wp_mail if Resend not configured
+            error_log('Resend API key not configured, falling back to wp_mail');
+
+            $headers = array(
+                'Content-Type: text/html; charset=UTF-8',
+                'From: ' . Gym_Admin::get_setting('email_from_name', get_bloginfo('name')) . ' <' . $from_email . '>'
+            );
+
+            $sent = wp_mail($user->user_email, $subject, $content, $headers);
+
+            if ($sent) {
+                Gym_Admin::update_email_status($log_id, 'sent');
+
+                return array(
+                    'success' => true,
+                    'message' => 'Email sent successfully via WordPress',
+                    'log_id' => $log_id,
+                    'recipient' => $user->user_email,
+                    'template' => $template_name,
+                    'sent_via' => 'wordpress'
+                );
+            } else {
+                $error_message = 'WordPress wp_mail function failed';
+                Gym_Admin::update_email_status($log_id, 'failed', $error_message);
+
+                return new WP_Error('send_failed', $error_message);
+            }
         }
     }
 
+    /**
+     * FIXED: Bulk emails now properly uses Resend service
+     */
     public function send_bulk_emails($user_ids, $template_name, $custom_data = array())
     {
         $max_batch_size = (int) Gym_Admin::get_setting('max_bulk_emails_per_batch', 50);
@@ -435,6 +484,9 @@ class Gym_Email_Service
         return $results;
     }
 
+    /**
+     * FIXED: Custom bulk emails via Resend
+     */
     public function send_bulk_custom_emails($user_ids, $subject, $content, $custom_data = array())
     {
         $max_batch_size = (int) Gym_Admin::get_setting('max_bulk_emails_per_batch', 50);

@@ -3,6 +3,11 @@
  * Membership service for integrating with Paid Memberships Pro
  * UPDATED VERSION - Added price update functionality
  * BUG FIXES APPLIED: Fixes 1, 2, 3, 5, 6 per bug handover document
+ * 
+ * 🔥 CRITICAL FIX: Pause/Expiry Bug
+ * - Check pause status FIRST before checking enddate
+ * - Paused memberships ignore calendar date expiry
+ * - Use >= instead of > for enddate to include full day
  */
 class Gym_Membership_Service
 {
@@ -10,6 +15,10 @@ class Gym_Membership_Service
     private $visit_based_plans = array(12, 13);
     private $default_monthly_visits = 12;
 
+    /**
+     * 🔥 FIXED: Check pause status BEFORE date validation
+     * This prevents memberships from expiring on calendar date if paused
+     */
     public function get_user_membership($user_id)
     {
         // Check if PMPro is active
@@ -37,18 +46,39 @@ class Gym_Membership_Service
             );
         }
 
-        // Get the actual membership record from database to get correct dates
-        // FIX 1: Added enddate gate — PMPro never flips status to 'expired',
-        // so we must check enddate ourselves to avoid returning stale active rows.
+        // 🔥 FIX: Check pause status FIRST
+        $pause_status = $this->get_membership_pause_status($user_id);
+        $is_paused = $pause_status['is_paused'];
+
         global $wpdb;
-        $membership_record = $wpdb->get_row($wpdb->prepare(
-            "SELECT * FROM {$wpdb->prefix}pmpro_memberships_users 
-             WHERE user_id = %d AND membership_id = %d AND status = 'active' 
-             AND (enddate IS NULL OR enddate = '0000-00-00 00:00:00' OR enddate > NOW())
-             ORDER BY id DESC LIMIT 1",
-            $user_id,
-            $membership_level->id
-        ));
+
+        // 🔥 FIX: If paused, retrieve membership WITHOUT strict enddate check
+        // Paused memberships stay active regardless of calendar date
+        if ($is_paused) {
+            // For paused members, get the membership record without date restrictions
+            $membership_record = $wpdb->get_row($wpdb->prepare(
+                "SELECT * FROM {$wpdb->prefix}pmpro_memberships_users 
+                 WHERE user_id = %d AND membership_id = %d AND status = 'active'
+                 ORDER BY id DESC LIMIT 1",
+                $user_id,
+                $membership_level->id
+            ));
+
+            error_log("DEBUG: User {$user_id} has PAUSED membership - fetched without date check");
+        } else {
+            // For non-paused members, use strict enddate check with >= (not >)
+            // This includes the entire day of expiry
+            $membership_record = $wpdb->get_row($wpdb->prepare(
+                "SELECT * FROM {$wpdb->prefix}pmpro_memberships_users 
+                 WHERE user_id = %d AND membership_id = %d AND status = 'active' 
+                 AND (enddate IS NULL OR enddate = '0000-00-00 00:00:00' OR enddate >= CURDATE())
+                 ORDER BY id DESC LIMIT 1",
+                $user_id,
+                $membership_level->id
+            ));
+
+            error_log("DEBUG: User {$user_id} has NON-PAUSED membership - using strict date check");
+        }
 
         $expiry_date = null;
         $start_date = null;
@@ -74,7 +104,14 @@ class Gym_Membership_Service
                 $membership_record->enddate !== null
             ) {
                 $expiry_date = date('Y-m-d H:i:s', strtotime($membership_record->enddate));
-                $is_active = strtotime($expiry_date) > time();
+
+                // 🔥 FIX: If paused, don't use enddate to determine is_active
+                if (!$is_paused) {
+                    $is_active = strtotime($expiry_date) > time();
+                } else {
+                    // Paused members are always active until unpaused
+                    $is_active = true;
+                }
             } else {
                 // FIX 2: Null/zero enddate must check level expiration settings
                 // before treating as a lifetime membership.
@@ -83,21 +120,15 @@ class Gym_Membership_Service
                     $is_active = true;
                 } else {
                     // Level is configured to expire but enddate is missing — fail safe: treat as expired.
+                    // UNLESS paused, then it's still active
                     $expiry_date = null;
-                    $is_active = false;
+                    $is_active = $is_paused ? true : false;
                 }
             }
-        }
-
-        // FIX 1 (continued): If the enddate gate caused $membership_record to be null
-        // (i.e. a row exists in DB with status='active' but enddate has passed),
-        // we must NOT leave $is_active as the default true.
-        if (!$membership_record) {
+        } else {
+            // No record found in database
             $is_active = false;
         }
-
-        // Get pause status
-        $pause_status = $this->get_membership_pause_status($user_id);
 
         // Get visit information for visit-based plans
         $visit_info = null;
@@ -105,10 +136,11 @@ class Gym_Membership_Service
 
         if ($is_visit_based) {
             // FIX 3: Pass expiry_date so get_user_visit_info() can hard-stop on expired memberships.
+            // But if paused, visits don't matter either
             $visit_info = $this->get_user_visit_info($user_id, $start_date, $expiry_date);
 
-            // For visit-based plans, also check if visits are exhausted
-            if ($visit_info['remaining_visits'] <= 0 && $visit_info['is_current_cycle']) {
+            // For visit-based plans, only check if visits are exhausted if NOT paused
+            if (!$is_paused && $visit_info['remaining_visits'] <= 0 && $visit_info['is_current_cycle']) {
                 $is_active = false;
             }
         }
@@ -121,8 +153,8 @@ class Gym_Membership_Service
             'start_date' => $start_date,
             'is_active' => $is_active,
             'status' => $is_active ? 'active' : 'expired',
-            'is_paused' => $pause_status['is_paused'],
-            'pause_info' => $pause_status['is_paused'] ? $pause_status : null,
+            'is_paused' => $is_paused,
+            'pause_info' => $is_paused ? $pause_status : null,
             'is_visit_based' => $is_visit_based
         );
 
@@ -488,9 +520,11 @@ class Gym_Membership_Service
             'membership' => $fresh_membership,
             'update_type' => $update_type
         );
-    }   /**
-        * Setup visit tracking for user
-        */
+    }
+
+    /**
+     * Setup visit tracking for user
+     */
     private function setup_visit_tracking($user_id, $monthly_visits)
     {
         update_user_meta($user_id, 'membership_visit_allowance', (int) $monthly_visits);
@@ -511,21 +545,41 @@ class Gym_Membership_Service
         delete_user_meta($user_id, 'membership_visit_log');
     }
 
+    /**
+     * 🔥 FIXED: Use >= instead of > for enddate check
+     */
     public function get_user_membership_fresh($user_id)
     {
         global $wpdb;
 
+        // 🔥 FIX: Check pause status first
+        $pause_status = $this->get_membership_pause_status($user_id);
+        $is_paused = $pause_status['is_paused'];
+
         // Get the most recent active membership directly from database
         // FIX 1: Added enddate gate — same reason as in get_user_membership().
-        $membership_record = $wpdb->get_row($wpdb->prepare(
-            "SELECT mu.*, ml.name, ml.description 
-         FROM {$wpdb->prefix}pmpro_memberships_users mu
-         JOIN {$wpdb->prefix}pmpro_membership_levels ml ON mu.membership_id = ml.id
-         WHERE mu.user_id = %d AND mu.status = 'active' 
-         AND (mu.enddate IS NULL OR mu.enddate = '0000-00-00 00:00:00' OR mu.enddate > NOW())
-         ORDER BY mu.id DESC LIMIT 1",
-            $user_id
-        ));
+        if ($is_paused) {
+            // Paused members: fetch without date restrictions
+            $membership_record = $wpdb->get_row($wpdb->prepare(
+                "SELECT mu.*, ml.name, ml.description 
+                 FROM {$wpdb->prefix}pmpro_memberships_users mu
+                 JOIN {$wpdb->prefix}pmpro_membership_levels ml ON mu.membership_id = ml.id
+                 WHERE mu.user_id = %d AND mu.status = 'active' 
+                 ORDER BY mu.id DESC LIMIT 1",
+                $user_id
+            ));
+        } else {
+            // Non-paused members: use strict date check with >=
+            $membership_record = $wpdb->get_row($wpdb->prepare(
+                "SELECT mu.*, ml.name, ml.description 
+                 FROM {$wpdb->prefix}pmpro_memberships_users mu
+                 JOIN {$wpdb->prefix}pmpro_membership_levels ml ON mu.membership_id = ml.id
+                 WHERE mu.user_id = %d AND mu.status = 'active' 
+                 AND (mu.enddate IS NULL OR mu.enddate = '0000-00-00 00:00:00' OR mu.enddate >= CURDATE())
+                 ORDER BY mu.id DESC LIMIT 1",
+                $user_id
+            ));
+        }
 
         if (!$membership_record) {
             return array(
@@ -560,7 +614,12 @@ class Gym_Membership_Service
             $membership_record->enddate !== null
         ) {
             $expiry_date = date('Y-m-d H:i:s', strtotime($membership_record->enddate));
-            $is_active = strtotime($expiry_date) > time();
+            // If paused, don't use enddate to determine is_active
+            if (!$is_paused) {
+                $is_active = strtotime($expiry_date) > time();
+            } else {
+                $is_active = true;
+            }
         } else {
             // FIX 2: Null/zero enddate — check level expiration settings before treating as lifetime.
             if ($this->is_lifetime_membership($membership_record->enddate, $membership_record->membership_id)) {
@@ -569,12 +628,9 @@ class Gym_Membership_Service
             } else {
                 // Level is configured to expire but enddate is missing — fail safe: treat as expired.
                 $expiry_date = null;
-                $is_active = false;
+                $is_active = $is_paused ? true : false;
             }
         }
-
-        // Get pause status
-        $pause_status = $this->get_membership_pause_status($user_id);
 
         // Check visit status for visit-based plans
         $is_visit_based = in_array($membership_record->membership_id, $this->visit_based_plans);
@@ -584,8 +640,8 @@ class Gym_Membership_Service
             // FIX 3: Pass expiry_date so get_user_visit_info() can hard-stop on expired memberships.
             $visit_info = $this->get_user_visit_info($user_id, $start_date, $expiry_date);
 
-            // For visit-based plans, also check if visits are exhausted
-            if ($visit_info['remaining_visits'] <= 0 && $visit_info['is_current_cycle']) {
+            // For visit-based plans, only check if visits are exhausted if NOT paused
+            if (!$is_paused && $visit_info['remaining_visits'] <= 0 && $visit_info['is_current_cycle']) {
                 $is_active = false;
             }
         }
@@ -598,8 +654,8 @@ class Gym_Membership_Service
             'start_date' => $start_date,
             'is_active' => $is_active,
             'status' => $is_active ? 'active' : 'expired',
-            'is_paused' => $pause_status['is_paused'],
-            'pause_info' => $pause_status['is_paused'] ? $pause_status : null,
+            'is_paused' => $is_paused,
+            'pause_info' => $is_paused ? $pause_status : null,
             'is_visit_based' => $is_visit_based
         );
 
@@ -850,7 +906,7 @@ class Gym_Membership_Service
         $active_members = $wpdb->get_var(
             "SELECT COUNT(*) FROM {$table} 
              WHERE status = 'active' 
-             AND (enddate IS NULL OR enddate = '0000-00-00 00:00:00' OR enddate > NOW())"
+             AND (enddate IS NULL OR enddate = '0000-00-00 00:00:00' OR enddate >= CURDATE())"
         );
 
         // Get expired members
@@ -859,7 +915,7 @@ class Gym_Membership_Service
              WHERE status = 'active' 
              AND enddate IS NOT NULL 
              AND enddate != '0000-00-00 00:00:00' 
-             AND enddate <= NOW()"
+             AND enddate < CURDATE()"
         );
 
         // Get paused members count
@@ -921,7 +977,9 @@ class Gym_Membership_Service
         return new WP_Error('cancellation_failed', 'Failed to cancel membership.');
     }
 
-    // Pause membership functionality
+    /**
+     * Pause membership functionality
+     */
     public function pause_membership($user_id, $reason = '')
     {
         global $wpdb;
@@ -990,7 +1048,10 @@ class Gym_Membership_Service
         );
     }
 
-    // Unpause membership functionality
+    /**
+     * 🔥 FIXED: Unpause membership - now works even on expiry date
+     * Update by record ID instead of status to handle expired records
+     */
     public function unpause_membership($user_id)
     {
         global $wpdb;
@@ -1016,18 +1077,48 @@ class Gym_Membership_Service
         if ($original_end_date) {
             $new_end_date = date('Y-m-d H:i:s', strtotime($original_end_date . " +{$days_paused} days"));
 
-            // Update the membership end date in PMPro database
+            // 🔥 FIX: Get the membership record by ID, not by status
+            // This allows updating even if the record shows as expired
             $membership_table = $wpdb->prefix . 'pmpro_memberships_users';
-            $wpdb->update(
+
+            $current_record = $wpdb->get_row($wpdb->prepare(
+                "SELECT * FROM {$membership_table}
+                 WHERE user_id = %d
+                 ORDER BY id DESC LIMIT 1",
+                $user_id
+            ));
+
+            if (!$current_record) {
+                return new WP_Error('no_membership_record', 'No membership record found for user.');
+            }
+
+            // 🔥 FIX: Update by primary key ID instead of status
+            // This ensures we update the record regardless of its current status
+            $update_result = $wpdb->update(
                 $membership_table,
-                array('enddate' => $new_end_date),
                 array(
-                    'user_id' => $user_id,
-                    'status' => 'active'
+                    'enddate' => $new_end_date,
+                    'status' => 'active',  // Re-activate the membership
+                    'modified' => current_time('mysql')
                 ),
-                array('%s'),
-                array('%d', '%s')
+                array(
+                    'id' => $current_record->id  // Update by primary key, not status
+                ),
+                array('%s', '%s', '%s'),
+                array('%d')
             );
+
+            if ($update_result === false) {
+                error_log("Failed to update membership enddate for user {$user_id}: " . $wpdb->last_error);
+                return new WP_Error('update_failed', 'Failed to update membership end date: ' . $wpdb->last_error);
+            }
+
+            if ($update_result === 0) {
+                error_log("No membership record updated for user {$user_id} - record ID: {$current_record->id}");
+                return new WP_Error('update_failed', 'Could not find membership record to update.');
+            }
+
+            error_log("Successfully updated membership enddate for user {$user_id}: {$new_end_date}");
         }
 
         // Update total paused days
@@ -1040,10 +1131,19 @@ class Gym_Membership_Service
         // Add to pause history
         $this->add_pause_history_entry($user_id, 'unpaused', $unpause_date, '', $days_paused);
 
-        // Clear PMPro caches
+        // Clear PMPro caches - IMPORTANT for expired memberships
         if (function_exists('pmpro_delete_user_membership_level_cache')) {
             pmpro_delete_user_membership_level_cache($user_id);
         }
+
+        // Clear WordPress caches
+        wp_cache_delete($user_id, 'users');
+        wp_cache_delete($user_id, 'user_meta');
+        wp_cache_delete("pmpro_membership_level_for_user_" . $user_id, 'pmpro');
+        clean_user_cache($user_id);
+
+        // Add delay to ensure database consistency
+        usleep(100000); // 0.1 second delay
 
         // Log the unpause
         $log_message = "Membership unpaused (paused for {$days_paused} days)";
@@ -1051,6 +1151,15 @@ class Gym_Membership_Service
             $log_message .= " - New expiry: " . date('Y-m-d', strtotime($new_end_date));
         }
         Gym_Admin::add_user_note($user_id, $log_message);
+
+        // Get fresh membership data to verify
+        $fresh_membership = $this->get_user_membership_fresh($user_id);
+
+        // Verify the update worked
+        if (!$fresh_membership['is_active']) {
+            error_log("WARNING: Membership still shows as inactive after unpause for user {$user_id}");
+            error_log("Fresh membership data: " . print_r($fresh_membership, true));
+        }
 
         return array(
             'success' => true,
@@ -1061,11 +1170,14 @@ class Gym_Membership_Service
             'original_end_date' => $original_end_date,
             'new_end_date' => $new_end_date,
             'paused_status' => false,
-            'total_paused_days' => $total_paused_days
+            'total_paused_days' => $total_paused_days,
+            'membership_is_now_active' => $fresh_membership['is_active']  // Verification flag
         );
     }
 
-    // Get membership pause status
+    /**
+     * Get membership pause status
+     */
     public function get_membership_pause_status($user_id)
     {
         $is_paused = (bool) get_user_meta($user_id, 'membership_is_paused', true);
@@ -1118,7 +1230,9 @@ class Gym_Membership_Service
         );
     }
 
-    // Clear pause data
+    /**
+     * Clear pause data
+     */
     private function clear_pause_data($user_id)
     {
         delete_user_meta($user_id, 'membership_is_paused');
@@ -1127,7 +1241,9 @@ class Gym_Membership_Service
         delete_user_meta($user_id, 'membership_remaining_days');
     }
 
-    // Add pause history entry
+    /**
+     * Add pause history entry
+     */
     private function add_pause_history_entry($user_id, $action, $date, $reason = '', $days_paused = 0)
     {
         $history = get_user_meta($user_id, 'membership_pause_history', true);
@@ -1138,7 +1254,7 @@ class Gym_Membership_Service
         $entry = array(
             'action' => $action,
             'date' => $date,
-            'admin_id' => get_current_user_id(), // This might need adjustment for gym admin system
+            'admin_id' => get_current_user_id(),
             'timestamp' => time()
         );
 
@@ -1154,7 +1270,9 @@ class Gym_Membership_Service
         update_user_meta($user_id, 'membership_pause_history', $history);
     }
 
-    // Get pause history
+    /**
+     * Get pause history
+     */
     private function get_pause_history($user_id)
     {
         $history = get_user_meta($user_id, 'membership_pause_history', true);
@@ -1401,7 +1519,6 @@ class Gym_Membership_Service
             $level_name = $membership['level_name'];
         }
 
-        // ✅ FIX: Use the actual assigned dates
         $actual_start_date = $start_date;
         $actual_end_date = $end_date;
 
@@ -1412,7 +1529,6 @@ class Gym_Membership_Service
             $actual_end_date = $actual_end_date ?: $membership['expiry_date'];
         }
 
-        // ✅ FIX: Proper expiry date formatting with fallback
         $formatted_expiry = 'Lifetime';
         if ($actual_end_date && $actual_end_date !== '0000-00-00 00:00:00') {
             $formatted_expiry = date('F j, Y', strtotime($actual_end_date));

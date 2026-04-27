@@ -384,22 +384,10 @@ class Gym_Email_Endpoints
             return new WP_Error('invalid_user_ids', 'User IDs must be a non-empty array.', array('status' => 400));
         }
 
-        // Limit bulk emails (prevent abuse)
-        $max_bulk = (int) Gym_Admin::get_setting('max_bulk_emails_per_request', 100);
-        if (count($user_ids) > $max_bulk) {
-            return new WP_Error('too_many_recipients', "Maximum {$max_bulk} recipients allowed per request.", array('status' => 400));
-        }
-
-        // Validate each user ID
-        $valid_user_ids = array();
-        foreach ($user_ids as $user_id) {
-            if (is_numeric($user_id) && get_user_by('id', $user_id)) {
-                $valid_user_ids[] = (int) $user_id;
-            }
-        }
-
-        if (empty($valid_user_ids)) {
-            return new WP_Error('no_valid_users', 'No valid users found.', array('status' => 400));
+        // Check if Resend is configured
+        $resend_key = Gym_Admin::get_setting('resend_api_key', '');
+        if (empty($resend_key)) {
+            return new WP_Error('resend_not_configured', 'Resend API key not configured. Contact system administrator.', array('status' => 500));
         }
 
         // Sanitize custom data
@@ -409,48 +397,67 @@ class Gym_Email_Endpoints
             });
         }
 
-        // Determine email mode
+        // Prepare email content
         $email_mode = $this->determine_email_mode($template, $custom_subject, $custom_content);
+
+        // Generate HTML and text content based on mode
+        $html_content = '';
+        $text_content = '';
 
         switch ($email_mode) {
             case 'template_only':
-                $results = $this->email_service->send_bulk_emails($valid_user_ids, $template, $custom_data);
+                $content = $this->email_service->get_template_content($template);
+                $subject = $this->email_service->get_email_templates()[$template]['subject'] ?? 'Email';
                 break;
 
             case 'custom_with_template':
-                $results = $this->email_service->send_bulk_template_with_overrides(
-                    $valid_user_ids,
-                    $template,
-                    $custom_subject ? sanitize_text_field($custom_subject) : null,
-                    $custom_content ? $this->sanitize_email_content($custom_content) : null,
-                    $custom_data
-                );
+                $content = $custom_content ?: $this->email_service->get_template_content($template);
+                $subject = $custom_subject ?: $this->email_service->get_email_templates()[$template]['subject'];
                 break;
 
             case 'custom_only':
                 if (empty($custom_subject) || empty($custom_content)) {
-                    return new WP_Error('missing_custom_data', 'Both subject and content are required for custom bulk emails.', array('status' => 400));
+                    return new WP_Error('missing_custom_data', 'Both subject and content required for custom emails.', array('status' => 400));
                 }
-
-                $results = $this->email_service->send_bulk_custom_emails(
-                    $valid_user_ids,
-                    sanitize_text_field($custom_subject),
-                    $this->sanitize_email_content($custom_content),
-                    $custom_data
-                );
+                $content = $custom_content;
+                $subject = $custom_subject;
                 break;
 
             default:
-                return new WP_Error('invalid_email_params', 'Invalid email parameters provided.', array('status' => 400));
+                return new WP_Error('invalid_email_params', 'Invalid email parameters.', array('status' => 400));
+        }
+
+        // Wrap content in email template
+        $wrapped_content = $this->email_service->get_default_email_wrapper();
+        $wrapped_content = str_replace('{{content}}', $content, $wrapped_content);
+        $wrapped_content = str_replace('{{subject}}', $subject, $wrapped_content);
+
+        // Replace variables
+        $html_content = $this->email_service->replace_variables($wrapped_content, $custom_data);
+        $text_content = wp_strip_all_tags($html_content);
+
+        // Initialize Resend service
+        $resend_service = new Gym_Resend_Service();
+
+        // Start async batch processing
+        $result = $resend_service->send_bulk_async(
+            $user_ids,
+            $subject,
+            $html_content,
+            $text_content
+        );
+
+        if (is_wp_error($result)) {
+            return $result;
         }
 
         return rest_ensure_response(array(
             'success' => true,
-            'results' => $results,
-            'total_attempted' => count($valid_user_ids),
-            'sent' => $results['sent'],
-            'failed' => $results['failed'],
-            'invalid_users' => count($user_ids) - count($valid_user_ids)
+            'job_id' => $result['job_id'],
+            'message' => $result['message'],
+            'total_users' => $result['total_users'],
+            'status' => 'initiated',
+            'note' => 'Emails are being sent in batches. A detailed report will be sent to all super_admins when complete.'
         ));
     }
 

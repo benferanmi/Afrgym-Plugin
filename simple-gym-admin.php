@@ -2,8 +2,8 @@
 /**
  * Plugin Name: Simple Gym Admin
  * Description: Updating recipient stats endpoint and dashboard summary stats endpoint 
- * Version: 5.4.6
- * Updates: fixing custom emamil
+ * Version: 5.5.2
+ * Updates: updating the expirey so that they can unpause for expired users 
  * Author: Opafunso Benjamin
  * Text Domain: simple-gym-admin
  */
@@ -33,6 +33,8 @@ function simple_gym_admin_load_dependencies()
     require_once SIMPLE_GYM_ADMIN_PLUGIN_DIR . 'includes/services/class-admin-service.php';
     require_once SIMPLE_GYM_ADMIN_PLUGIN_DIR . 'includes/services/class-stats-service.php';
     require_once SIMPLE_GYM_ADMIN_PLUGIN_DIR . 'includes/services/class-product-service.php';
+    require_once SIMPLE_GYM_ADMIN_PLUGIN_DIR . 'includes/services/class-gym-resend-service.php';
+    require_once SIMPLE_GYM_ADMIN_PLUGIN_DIR . 'includes/services/class-gym-email-report-service.php';
 
     // API Endpoints
     require_once SIMPLE_GYM_ADMIN_PLUGIN_DIR . 'includes/api/class-auth-endpoints.php';
@@ -44,14 +46,12 @@ function simple_gym_admin_load_dependencies()
     require_once SIMPLE_GYM_ADMIN_PLUGIN_DIR . 'includes/api/class-media-endpoints.php';
     require_once SIMPLE_GYM_ADMIN_PLUGIN_DIR . 'includes/api/class-otp-endpoints.php';
     require_once SIMPLE_GYM_ADMIN_PLUGIN_DIR . 'includes/api/class-product-endpoints.php';
+    require_once SIMPLE_GYM_ADMIN_PLUGIN_DIR . 'includes/api/class-gym-bulk-job-endpoints.php';
+
 }
 
 // Load dependencies immediately
 simple_gym_admin_load_dependencies();
-
-/**
- * Activation function
- */
 function simple_gym_admin_activate()
 {
     $activator = new Gym_Activator();
@@ -59,9 +59,6 @@ function simple_gym_admin_activate()
     flush_rewrite_rules();
 }
 
-/**
- * Deactivation function
- */
 function simple_gym_admin_deactivate()
 {
     flush_rewrite_rules();
@@ -70,9 +67,6 @@ function simple_gym_admin_deactivate()
     wp_clear_scheduled_hook('gym_admin_monthly_product_report');
 }
 
-/**
- * Main plugin class
- */
 class Simple_Gym_Admin
 {
     public function __construct()
@@ -86,6 +80,10 @@ class Simple_Gym_Admin
         // Schedule monthly product reports
         add_action('wp', array($this, 'schedule_monthly_product_reports'));
         add_action('gym_admin_monthly_product_report', array($this, 'send_monthly_product_reports'));
+
+        // Schedule bulk email batch processing
+        add_action('wp_loaded', array($this, 'schedule_bulk_email_processing'));
+        add_action('gym_process_bulk_batch', array($this, 'process_bulk_batch'));
     }
 
     public function init()
@@ -106,12 +104,10 @@ class Simple_Gym_Admin
             new Gym_Stats_Endpoints();
             new Gym_OTP_Endpoints();
             new Gym_Product_Endpoints();
+            new Gym_Bulk_Job_Endpoints();
         }
     }
 
-    /**
-     * Schedule session cleanup
-     */
     public function schedule_cleanup()
     {
         if (!wp_next_scheduled('gym_admin_cleanup_sessions')) {
@@ -119,17 +115,11 @@ class Simple_Gym_Admin
         }
     }
 
-    /**
-     * Clean up expired sessions
-     */
     public function cleanup_expired_sessions()
     {
         Gym_Admin_Service::cleanup_expired_sessions();
     }
 
-    /**
-     * Schedule monthly product reports
-     */
     public function schedule_monthly_product_reports()
     {
         if (!wp_next_scheduled('gym_admin_monthly_product_report')) {
@@ -139,9 +129,6 @@ class Simple_Gym_Admin
         }
     }
 
-    /**
-     * Send monthly product reports (SEPARATE FOR EACH GYM)
-     */
     public function send_monthly_product_reports()
     {
         // Check if product reports are enabled
@@ -181,9 +168,7 @@ class Simple_Gym_Admin
         }
     }
 
-    /**
-     * Send product report email for a specific gym
-     */
+
     private function send_product_report_email($gym_id, $gym_name, $month, $stats, $report_email)
     {
         // Load email template
@@ -309,9 +294,7 @@ class Simple_Gym_Admin
         error_log(sprintf('Product report sent for %s (%s)', $gym_name, $month));
     }
 
-    /**
-     * Group daily stats by week
-     */
+
     private function group_days_by_week($daily_stats)
     {
         $weeks = array();
@@ -331,6 +314,21 @@ class Simple_Gym_Admin
         }
 
         return $weeks;
+    }
+
+
+    public function schedule_bulk_email_processing()
+    {
+        if (!wp_next_scheduled('gym_process_bulk_batch_hook')) {
+            wp_schedule_event(time(), 'every_minute', 'gym_process_bulk_batch_hook');
+        }
+    }
+
+
+    public function process_bulk_batch($job_id = null, $batch_number = 0)
+    {
+        // This is called by WordPress cron
+        // The actual batch processing is handled by Resend service
     }
 }
 
@@ -452,9 +450,16 @@ add_action('rest_api_init', function () {
     }, 10, 4);
 });
 
-/**
- * Log gym admin activities for security monitoring
- */
+add_filter('cron_schedules', function ($schedules) {
+    if (!isset($schedules['every_minute'])) {
+        $schedules['every_minute'] = array(
+            'interval' => 60,
+            'display' => 'Every Minute'
+        );
+    }
+    return $schedules;
+});
+
 function log_gym_admin_activity($action, $admin_id, $details = array())
 {
     if (defined('WP_DEBUG') && WP_DEBUG) {
